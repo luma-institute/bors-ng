@@ -43,9 +43,33 @@ defmodule BorsNG.Worker.BatcherMessageTest do
     assert expected_message == actual_message
   end
 
-  test "generate conflict/retry message" do
-    expected_message = "# Merge conflict (retrying...)"
-    actual_message = Message.generate_message({:conflict, :retrying})
+  test "generate canceled message" do
+    expected_message = "# Canceled"
+    actual_message = Message.generate_message({:canceled, :failed})
+    assert expected_message == actual_message
+  end
+
+  test "generate canceled/retry message" do
+    expected_message = "This PR was included in a batch that was canceled, it will be automatically retried"
+    actual_message = Message.generate_message({:canceled, :retrying})
+    assert expected_message == actual_message
+  end
+
+  test "generate timeout message" do
+    expected_message = "# Timed out"
+    actual_message = Message.generate_message({:timeout, :failed})
+    assert expected_message == actual_message
+  end
+
+  test "generate timeout/retry message" do
+    expected_message = "This PR was included in a batch that timed out, it will be automatically retried"
+    actual_message = Message.generate_message({:timeout, :retrying})
+    assert expected_message == actual_message
+  end
+
+  test "generate merged into master message" do
+    expected_message = "# Pull request successfully merged into master."
+    actual_message = Message.generate_message({:merged, :squashed, "master"})
     assert expected_message == actual_message
   end
 
@@ -90,6 +114,10 @@ defmodule BorsNG.Worker.BatcherMessageTest do
 
   test "cut body with multiple matches" do
     assert "aa" == Message.cut_body("aabcbd", "b")
+  end
+
+  test "cut whole body" do
+    assert "" == Message.cut_body("abc", "")
   end
 
   test "cut body with no match" do

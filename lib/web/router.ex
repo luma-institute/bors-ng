@@ -6,8 +6,6 @@ defmodule BorsNG.Router do
   and user authentication part of the session.
   """
 
-  @wobserver_url Confex.fetch_env!(:wobserver, :remote_url_prefix)
-
   use BorsNG.Web, :router
   alias BorsNG.Database
 
@@ -35,12 +33,6 @@ defmodule BorsNG.Router do
     plug :force_current_user_admin
   end
 
-  pipeline :wobserver do
-    plug :fetch_session
-    plug :get_current_user
-    plug :force_current_user_admin
-  end
-
   pipeline :webhook do
     plug Plug.Parsers, parsers: [:json], json_decoder: Poison
   end
@@ -51,6 +43,14 @@ defmodule BorsNG.Router do
     pipe_through :browser_login
 
     get "/", PageController, :index
+  end
+
+  scope "/batches", BorsNG do
+    pipe_through :browser_page
+    pipe_through :browser_session
+    pipe_through :browser_login
+
+    get "/:id", BatchController, :show
   end
 
   scope "/repositories", BorsNG do
@@ -70,13 +70,9 @@ defmodule BorsNG.Router do
     get "/:id/add-reviewer/:login", ProjectController, :confirm_add_reviewer
     put "/:id/synchronize", ProjectController, :synchronize
     get "/:id/log", ProjectController, :log
+    get "/:id/log_page", ProjectController, :log_page
     delete "/:id/reviewer/:user_id", ProjectController, :remove_reviewer
     delete "/:id/member/:user_id", ProjectController, :remove_member
-  end
-
-  scope @wobserver_url, Wobserver do
-    pipe_through :wobserver
-    forward "/", Web.Router
   end
 
   scope "/admin", BorsNG do
@@ -89,6 +85,9 @@ defmodule BorsNG.Router do
     get "/orphans", AdminController, :orphans
     get "/project", AdminController, :project_by_name
     get "/dup-patches", AdminController, :dup_patches
+    get "/crashes", AdminController, :crashes
+    post "/synchronize-all-installations", AdminController,
+         :synchronize_all_installations
   end
 
   scope "/auth", BorsNG do
@@ -121,7 +120,7 @@ defmodule BorsNG.Router do
       conn
     else
       conn
-      |> assign(:user, Database.Repo.get!(Database.User, user_id))
+      |> assign(:user, Database.Repo.get(Database.User, user_id))
       |> assign(:avatar_url, Plug.Conn.get_session(conn, :avatar_url))
     end
   end

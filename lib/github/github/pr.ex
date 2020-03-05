@@ -12,6 +12,7 @@ defmodule BorsNG.GitHub.Pr do
     base_ref: bitstring,
     head_sha: bitstring,
     user: BorsNG.GitHub.User.t,
+    mergeable: boolean | nil, # not all PRs have this field populated
   }
   defstruct(
     number: 0,
@@ -24,7 +25,8 @@ defmodule BorsNG.GitHub.Pr do
     head_ref: "",
     head_repo_id: 0,
     base_repo_id: 0,
-    merged: false
+    merged: false,
+    mergeable: nil
     )
 
   @doc """
@@ -39,7 +41,7 @@ defmodule BorsNG.GitHub.Pr do
   @doc """
   Convert from Poison-decoded JSON to a Pr struct.
   """
-  @spec from_json(tjson) :: {:ok, t} | :err
+  @spec from_json(tjson) :: {:ok, t} | {:error, term}
   def from_json(%{
     "number" => number,
     "title" => title,
@@ -64,6 +66,7 @@ defmodule BorsNG.GitHub.Pr do
       "avatar_url" => user_avatar_url,
     },
     "merged_at" => merged_at,
+    "mergeable" => mergeable,
   }) when is_integer(number) do
     {:ok, %BorsNG.GitHub.Pr{
       number: number,
@@ -89,8 +92,61 @@ defmodule BorsNG.GitHub.Pr do
         login: user_login,
         avatar_url: user_avatar_url,
       },
-      merged: not is_nil merged_at
+      merged: (not is_nil merged_at),
+      mergeable: mergeable
     }}
+  end
+  def from_json(%{
+    "number" => number,
+    "title" => title,
+    "body" => body,
+    "state" => state,
+    "base" => %{
+      "ref" => base_ref,
+      "repo" => %{
+        "id" => base_repo_id
+      }
+    },
+    "head" => %{
+      "sha" => head_sha,
+      "ref" => head_ref,
+      "repo" => %{
+        "id" => head_repo_id
+      }
+    },
+    "user" => %{
+      "id" => user_id,
+      "login" => user_login,
+      "avatar_url" => user_avatar_url,
+    },
+    "merged_at" => merged_at,
+  }) when is_integer(number) do
+    from_json %{
+      "number" => number,
+      "title" => title,
+      "body" => body,
+      "state" => state,
+      "base" => %{
+        "ref" => base_ref,
+        "repo" => %{
+          "id" => base_repo_id
+        }
+      },
+      "head" => %{
+        "sha" => head_sha,
+        "ref" => head_ref,
+        "repo" => %{
+          "id" => head_repo_id
+        }
+      },
+      "user" => %{
+        "id" => user_id,
+        "login" => user_login,
+        "avatar_url" => user_avatar_url,
+      },
+      "merged_at" => merged_at,
+      "mergeable" => nil,
+    }
   end
 
   def from_json(x) do

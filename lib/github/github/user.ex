@@ -1,6 +1,6 @@
 defmodule BorsNG.GitHub.User do
   @moduledoc """
-  The GitHub structure of a user account.
+  The GitHub structure of a user account.  This is different from FullUser since this has many fewer fields.
   """
 
   defstruct id: 0, login: "", avatar_url: ""

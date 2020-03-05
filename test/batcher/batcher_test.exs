@@ -8,6 +8,7 @@ defmodule BorsNG.Worker.BatcherTest do
   alias BorsNG.Database.Patch
   alias BorsNG.Database.Project
   alias BorsNG.Database.Repo
+  alias BorsNG.GitHub.Pr
   alias BorsNG.Database.Status
   alias BorsNG.GitHub
 
@@ -178,7 +179,7 @@ defmodule BorsNG.Worker.BatcherTest do
         commits: %{},
         comments: %{
           1 => ["# Canceled"],
-          2 => ["# Canceled (will resume)"]},
+          2 => ["This PR was included in a batch that was canceled, it will be automatically retried"]},
         statuses: %{
           "N" => %{"bors" => :error},
           "P" => %{"bors" => :error}},
@@ -242,7 +243,7 @@ defmodule BorsNG.Worker.BatcherTest do
         branches: %{},
         commits: %{},
         comments: %{
-          1 => ["Not awaiting review"]
+          1 => ["Already running a review"]
           },
         statuses: %{},
         files: %{}
@@ -311,6 +312,508 @@ defmodule BorsNG.Worker.BatcherTest do
       }}
   end
 
+
+  test "Approve a patch which does not require reviewers", %{proj: proj} do
+
+    GitHub.ServerMock.put_state(%{
+      {{:installation, 91}, 14} => %{
+        branches: %{},
+        commits: %{},
+
+        comments: %{1 => []},
+        statuses: %{"Z" => %{"cn" => :ok}},
+        pulls: %{
+          1 => %Pr{
+            number: 1,
+            title: "Test",
+            body: "Mess",
+            state: :open,
+            base_ref: "master",
+            head_sha: "00000001",
+            head_ref: "update",
+            base_repo_id: 14,
+            head_repo_id: 14,
+            merged: false
+          }
+        },
+        reviews: %{1 => %{"APPROVED" => 0, "CHANGES_REQUESTED" => 0}},
+        files: %{"Z" => %{"bors.toml" =>
+          ~s"""
+          status = [ "ci" ]
+          pr_status = [ "cn" ]
+          use_codeowners = true
+          """},
+          "master" => %{".github/CODEOWNERS" =>
+            ~s"""
+            secrets.json               @my_org/my_team
+            """},
+        },
+      }})
+    patch = %Patch{
+              project_id: proj.id,
+              pr_xref: 1,
+              commit: "Z",
+              into_branch: "master"}
+            |> Repo.insert!()
+    Batcher.handle_cast({:reviewed, patch.id, "rvrr"}, proj.id)
+    state = GitHub.ServerMock.get_state()
+    assert state == %{
+             {{:installation, 91}, 14} => %{
+               branches: %{},
+               commits: %{},
+               comments: %{ 1 => []},
+               pulls: %{
+                 1 => %Pr{
+                   number: 1,
+                   title: "Test",
+                   body: "Mess",
+                   state: :open,
+                   base_ref: "master",
+                   head_sha: "00000001",
+                   head_ref: "update",
+                   base_repo_id: 14,
+                   head_repo_id: 14,
+                   merged: false
+                 }
+               },
+               statuses: %{"Z" => %{"bors" => :running, "cn" => :ok}},
+               files: %{"Z" => %{"bors.toml" =>
+                 ~s"""
+                 status = [ "ci" ]
+                 pr_status = [ "cn" ]
+                 use_codeowners = true
+                 """},
+                 "master" => %{".github/CODEOWNERS" =>
+                   ~s"""
+                   secrets.json               @my_org/my_team
+                   """},
+               },
+               reviews: %{1 => %{"APPROVED" => 0, "CHANGES_REQUESTED" => 0}},
+             }}
+  end
+
+  test "rejects a patch with missing require reviewers", %{proj: proj} do
+
+    GitHub.ServerMock.put_state(%{
+      {{:installation, 91}, 14} => %{
+        branches: %{},
+        commits: %{},
+        comments: %{1 => []},
+        teams: %{
+          "my_org" => %{
+            "my_team" => %{}
+          }
+        },
+        statuses: %{"Z" => %{"cn" => :ok}},
+        pulls: %{
+                1 => %Pr{
+                  number: 1,
+                  title: "Test",
+                  body: "Mess",
+                  state: :open,
+                  base_ref: "master",
+                  head_sha: "00000001",
+                  head_ref: "update",
+                  base_repo_id: 14,
+                  head_repo_id: 14,
+                  merged: false
+                  }
+        },
+        reviews: %{1 => %{"APPROVED" => 0, "CHANGES_REQUESTED" => 0, "approvers" => []}},
+        files: %{"Z" => %{"bors.toml" =>
+          ~s"""
+          status = [ "ci" ]
+          pr_status = [ "cn" ]
+          use_codeowners = true
+          """},
+          "master" => %{".github/CODEOWNERS" =>
+            ~s"""
+            bors.toml               @my_org/my_team
+            """},
+        },
+      }})
+    patch = %Patch{
+              project_id: proj.id,
+              pr_xref: 1,
+              commit: "Z",
+              into_branch: "master"}
+            |> Repo.insert!()
+    Batcher.handle_cast({:reviewed, patch.id, "rvrr"}, proj.id)
+    state = GitHub.ServerMock.get_state()
+    assert state == %{
+             {{:installation, 91}, 14} => %{
+               branches: %{},
+               commits: %{},
+               teams: %{
+                 "my_org" => %{
+                   "my_team" => %{}
+                 }
+               },
+               pulls: %{
+                 1 => %Pr{
+                   number: 1,
+                   title: "Test",
+                   body: "Mess",
+                   state: :open,
+                   base_ref: "master",
+                   head_sha: "00000001",
+                   head_ref: "update",
+                   base_repo_id: 14,
+                   head_repo_id: 14,
+                   merged: false
+                 }
+               },
+               comments: %{
+                 1 => [":-1: Rejected because of missing code owner approval"]},
+               statuses: %{"Z" => %{"cn" => :ok}},
+               files: %{"Z" => %{"bors.toml" =>
+                 ~s"""
+                 status = [ "ci" ]
+                 pr_status = [ "cn" ]
+                 use_codeowners = true
+                 """},
+                 "master" => %{".github/CODEOWNERS" =>
+                   ~s"""
+                   bors.toml               @my_org/my_team
+                   """},
+               },
+               reviews: %{1 => %{"APPROVED" => 0, "CHANGES_REQUESTED" => 0, "approvers" => []}},
+             }}
+    # When preflight checks reject a patch, no batch should be created!
+    assert [] == Repo.all(Batch)
+  end
+
+
+  test "rejects a patch with missing require reviewers - using prefix in CODEOWNERS", %{proj: proj} do
+
+    GitHub.ServerMock.put_state(%{
+      {{:installation, 91}, 14} => %{
+        branches: %{},
+        commits: %{},
+        comments: %{1 => []},
+        teams: %{
+          "my_org" => %{
+            "my_team" => %{}
+          }
+        },
+        statuses: %{"Z" => %{"cn" => :ok}},
+        pulls: %{
+          1 => %Pr{
+            number: 1,
+            title: "Test",
+            body: "Mess",
+            state: :open,
+            base_ref: "master",
+            head_sha: "00000001",
+            head_ref: "update",
+            base_repo_id: 14,
+            head_repo_id: 14,
+            merged: false
+          }
+        },
+        reviews: %{1 => %{"APPROVED" => 0, "CHANGES_REQUESTED" => 0, "approvers" => []}},
+        files: %{"Z" => %{"bors.toml" =>
+          ~s"""
+          status = [ "ci" ]
+          pr_status = [ "cn" ]
+          use_codeowners = true
+          """,
+          "lib/go-mercury/init.go" =>
+          ~s"""
+                      func init() {}
+            """},
+          "master" => %{".github/CODEOWNERS" =>
+            ~s"""
+            /lib/go-mercury/               @my_org/my_team
+            """},
+        },
+      }})
+    patch = %Patch{
+              project_id: proj.id,
+              pr_xref: 1,
+              commit: "Z",
+              into_branch: "master"}
+            |> Repo.insert!()
+    Batcher.handle_cast({:reviewed, patch.id, "rvrr"}, proj.id)
+    state = GitHub.ServerMock.get_state()
+    assert state == %{
+             {{:installation, 91}, 14} => %{
+               branches: %{},
+               commits: %{},
+               teams: %{
+                 "my_org" => %{
+                   "my_team" => %{}
+                 }
+               },
+               pulls: %{
+                 1 => %Pr{
+                   number: 1,
+                   title: "Test",
+                   body: "Mess",
+                   state: :open,
+                   base_ref: "master",
+                   head_sha: "00000001",
+                   head_ref: "update",
+                   base_repo_id: 14,
+                   head_repo_id: 14,
+                   merged: false
+                 }
+               },
+               comments: %{
+                 1 => [":-1: Rejected because of missing code owner approval"]},
+               statuses: %{"Z" => %{"cn" => :ok}},
+               files: %{"Z" => %{"bors.toml" =>
+                 ~s"""
+                 status = [ "ci" ]
+                 pr_status = [ "cn" ]
+                 use_codeowners = true
+                 """,
+                 "lib/go-mercury/init.go" =>
+                   ~s"""
+                             func init() {}
+                   """},
+                 "master" => %{".github/CODEOWNERS" =>
+                   ~s"""
+                   /lib/go-mercury/               @my_org/my_team
+                   """},
+               },
+               reviews: %{1 => %{"APPROVED" => 0, "CHANGES_REQUESTED" => 0, "approvers" => []}},
+             }}
+    # When preflight checks reject a patch, no batch should be created!
+    assert [] == Repo.all(Batch)
+  end
+
+  test "rejects a patch with missing require reviewers - using wildcard in CODEOWNERS", %{proj: proj} do
+
+    GitHub.ServerMock.put_state(%{
+      {{:installation, 91}, 14} => %{
+        branches: %{},
+        commits: %{},
+        comments: %{1 => []},
+        teams: %{
+          "my_org" => %{
+            "my_team" => %{}
+          }
+        },
+        statuses: %{"Z" => %{"cn" => :ok}},
+        pulls: %{
+          1 => %Pr{
+            number: 1,
+            title: "Test",
+            body: "Mess",
+            state: :open,
+            base_ref: "master",
+            head_sha: "00000001",
+            head_ref: "update",
+            base_repo_id: 14,
+            head_repo_id: 14,
+            merged: false
+          }
+        },
+        reviews: %{1 => %{"APPROVED" => 0, "CHANGES_REQUESTED" => 0, "approvers" => []}},
+        files: %{"Z" => %{"bors.toml" =>
+          ~s"""
+          status = [ "ci" ]
+          pr_status = [ "cn" ]
+          use_codeowners = true
+          """},
+          "master" => %{".github/CODEOWNERS" =>
+            ~s"""
+            *.toml               @my_org/my_team
+            """},
+        },
+      }})
+    patch = %Patch{
+              project_id: proj.id,
+              pr_xref: 1,
+              commit: "Z",
+              into_branch: "master"}
+            |> Repo.insert!()
+    Batcher.handle_cast({:reviewed, patch.id, "rvrr"}, proj.id)
+    state = GitHub.ServerMock.get_state()
+    assert state == %{
+             {{:installation, 91}, 14} => %{
+               branches: %{},
+               commits: %{},
+               teams: %{
+                 "my_org" => %{
+                   "my_team" => %{}
+                 }
+               },
+               pulls: %{
+                 1 => %Pr{
+                   number: 1,
+                   title: "Test",
+                   body: "Mess",
+                   state: :open,
+                   base_ref: "master",
+                   head_sha: "00000001",
+                   head_ref: "update",
+                   base_repo_id: 14,
+                   head_repo_id: 14,
+                   merged: false
+                 }
+               },
+               comments: %{
+                 1 => [":-1: Rejected because of missing code owner approval"]},
+               statuses: %{"Z" => %{"cn" => :ok}},
+               files: %{"Z" => %{"bors.toml" =>
+                 ~s"""
+                 status = [ "ci" ]
+                 pr_status = [ "cn" ]
+                 use_codeowners = true
+                 """},
+                 "master" => %{".github/CODEOWNERS" =>
+                   ~s"""
+                   *.toml               @my_org/my_team
+                   """},
+               },
+               reviews: %{1 => %{"APPROVED" => 0, "CHANGES_REQUESTED" => 0, "approvers" => []}},
+             }}
+    # When preflight checks reject a patch, no batch should be created!
+    assert [] == Repo.all(Batch)
+  end
+
+  test "Poll on a pending (waiting) PR status. Then reject after that CI fails.", %{proj: proj} do
+    GitHub.ServerMock.put_state(%{
+      {{:installation, 91}, 14} => %{
+        branches: %{},
+        commits: %{},
+        comments: %{1 => []},
+        statuses: %{"Z" => %{"cn" => :running}},
+        files: %{"Z" => %{"bors.toml" =>
+          ~s/status = [ "ci" ]\npr_status = [ "cn" ]/}},
+      }})
+    patch = %Patch{
+      project_id: proj.id,
+      pr_xref: 1,
+      commit: "Z",
+      into_branch: "master"}
+    |> Repo.insert!()
+    Batcher.handle_cast({:reviewed, patch.id, "rvr"}, proj.id)
+    state = GitHub.ServerMock.get_state()
+    assert state == %{
+      {{:installation, 91}, 14} => %{
+        branches: %{},
+        commits: %{},
+        comments: %{
+          1 => [":clock1: Waiting for PR status (Github check) to be set, probably by CI. Bors will automatically try to run when all required PR statuses are set."]},
+        statuses: %{"Z" => %{"cn" => :running}},
+        files: %{"Z" => %{"bors.toml" =>
+          ~s/status = [ "ci" ]\npr_status = [ "cn" ]/}},
+      }}
+    path = [{{:installation, 91}, 14}, :statuses, "Z"]
+    GitHub.ServerMock.put_state(update_in(GitHub.ServerMock.get_state,
+	  path,
+	  &(Map.put(&1, "cn", :error))))
+    Batcher.handle_info({:prerun_poll, 1000, {"rvr", patch}}, proj.id)
+    state = GitHub.ServerMock.get_state()
+    assert state == %{
+      {{:installation, 91}, 14} => %{
+        branches: %{},
+        commits: %{},
+        comments: %{
+          1 => [":-1: Rejected by PR status", ":clock1: Waiting for PR status (Github check) to be set, probably by CI. Bors will automatically try to run when all required PR statuses are set."]},
+        statuses: %{"Z" => %{"cn" => :error}},
+        files: %{"Z" => %{"bors.toml" =>
+          ~s/status = [ "ci" ]\npr_status = [ "cn" ]/}},
+      }}
+  end
+
+  test "Poll on a pending (waiting) PR status. Then accept after that CI succeeds.", %{proj: proj} do
+    GitHub.ServerMock.put_state(%{
+      {{:installation, 91}, 14} => %{
+        branches: %{},
+        commits: %{},
+        comments: %{1 => []},
+        statuses: %{"Z" => %{"cn" => :running}},
+        files: %{"Z" => %{"bors.toml" =>
+          ~s/status = [ "ci" ]\npr_status = [ "cn" ]/}},
+      }})
+    patch = %Patch{
+      project_id: proj.id,
+      pr_xref: 1,
+      commit: "Z",
+      into_branch: "master"}
+    |> Repo.insert!()
+    Batcher.handle_cast({:reviewed, patch.id, "rvr"}, proj.id)
+    state = GitHub.ServerMock.get_state()
+    assert state == %{
+      {{:installation, 91}, 14} => %{
+        branches: %{},
+        commits: %{},
+        comments: %{
+          1 => [":clock1: Waiting for PR status (Github check) to be set, probably by CI. Bors will automatically try to run when all required PR statuses are set."]},
+        statuses: %{"Z" => %{"cn" => :running}},
+        files: %{"Z" => %{"bors.toml" =>
+          ~s/status = [ "ci" ]\npr_status = [ "cn" ]/}},
+      }}
+    path = [{{:installation, 91}, 14}, :statuses, "Z"]
+    GitHub.ServerMock.put_state(update_in(GitHub.ServerMock.get_state,
+      path,
+      &(Map.put(&1, "cn", :ok))))
+    Batcher.handle_info({:prerun_poll, 1000, {"rvr", patch}}, proj.id)
+    state = GitHub.ServerMock.get_state()
+    assert state == %{
+      {{:installation, 91}, 14} => %{
+        branches: %{},
+        commits: %{},
+        comments: %{
+          1 => [":clock1: Waiting for PR status (Github check) to be set, probably by CI. Bors will automatically try to run when all required PR statuses are set."]},
+        statuses: %{"Z" => %{"cn" => :ok, "bors" => :running}},
+        files: %{"Z" => %{"bors.toml" =>
+          ~s/status = [ "ci" ]\npr_status = [ "cn" ]/}},
+      }}
+  end
+
+  test "Multiple polls on a same pending (waiting) PR status. Then accept after that CI succeeds.", %{proj: proj} do
+    GitHub.ServerMock.put_state(%{
+      {{:installation, 91}, 14} => %{
+        branches: %{},
+        commits: %{},
+        comments: %{1 => []},
+        statuses: %{"Z" => %{"cn" => :running}},
+        files: %{"Z" => %{"bors.toml" =>
+          ~s/status = [ "ci" ]\npr_status = [ "cn" ]/}},
+      }})
+    patch = %Patch{
+      project_id: proj.id,
+      pr_xref: 1,
+      commit: "Z",
+      into_branch: "master"}
+    |> Repo.insert!()
+    Batcher.handle_cast({:reviewed, patch.id, "rvr"}, proj.id)
+    state = GitHub.ServerMock.get_state()
+    assert state == %{
+      {{:installation, 91}, 14} => %{
+        branches: %{},
+        commits: %{},
+        comments: %{
+          1 => [":clock1: Waiting for PR status (Github check) to be set, probably by CI. Bors will automatically try to run when all required PR statuses are set."]},
+        statuses: %{"Z" => %{"cn" => :running}},
+        files: %{"Z" => %{"bors.toml" =>
+          ~s/status = [ "ci" ]\npr_status = [ "cn" ]/}},
+      }}
+    path = [{{:installation, 91}, 14}, :statuses, "Z"]
+    GitHub.ServerMock.put_state(update_in(GitHub.ServerMock.get_state,
+      path,
+      &(Map.put(&1, "cn", :ok))))
+    Batcher.handle_info({:prerun_poll, 1000, {"rvr", patch}}, proj.id)
+    Batcher.handle_info({:prerun_poll, 1000, {"rvr", patch}}, proj.id)
+    Batcher.handle_info({:prerun_poll, 1000, {"rvr", patch}}, proj.id)
+    state = GitHub.ServerMock.get_state()
+    assert state == %{
+      {{:installation, 91}, 14} => %{
+        branches: %{},
+        commits: %{},
+        comments: %{
+          1 => [":clock1: Waiting for PR status (Github check) to be set, probably by CI. Bors will automatically try to run when all required PR statuses are set."]},
+        statuses: %{"Z" => %{"cn" => :ok, "bors" => :running}},
+        files: %{"Z" => %{"bors.toml" =>
+          ~s/status = [ "ci" ]\npr_status = [ "cn" ]/}},
+      }}
+  end
+
   test "rejects a patch with a requested changes", %{proj: proj} do
     GitHub.ServerMock.put_state(%{
       {{:installation, 91}, 14} => %{
@@ -320,7 +823,7 @@ defmodule BorsNG.Worker.BatcherTest do
         statuses: %{"Z" => %{"cn" => :ok}},
         reviews: %{1 => %{"APPROVED" => 0, "CHANGES_REQUESTED" => 1}},
         files: %{"Z" => %{"bors.toml" =>
-          ~s/status = [ "ci" ]\npr_status = [ "cn" ]/}},
+          ~s/status = [ "ci" ]\nrequired_approvals = 0/}},
       }})
     patch = %Patch{
       project_id: proj.id,
@@ -338,10 +841,76 @@ defmodule BorsNG.Worker.BatcherTest do
           1 => [":-1: Rejected by code reviews"]},
         statuses: %{"Z" => %{"cn" => :ok}},
         files: %{"Z" => %{"bors.toml" =>
-                           ~s/status = [ "ci" ]\npr_status = [ "cn" ]/}},
+                           ~s/status = [ "ci" ]\nrequired_approvals = 0/}},
         reviews: %{1 => %{"APPROVED" => 0, "CHANGES_REQUESTED" => 1}},
       }}
   end
+
+  test "rejects an patch with a request for changes even if it also has approvals", %{proj: proj} do
+    GitHub.ServerMock.put_state(%{
+      {{:installation, 91}, 14} => %{
+        branches: %{},
+        commits: %{},
+        comments: %{1 => []},
+        statuses: %{"Z" => %{"cn" => :ok}},
+        reviews: %{1 => %{"APPROVED" => 2, "CHANGES_REQUESTED" => 1}},
+        files: %{"Z" => %{"bors.toml" =>
+          ~s/status = [ "ci" ]\nrequired_approvals = 1/}},
+      }})
+    patch = %Patch{
+      project_id: proj.id,
+      pr_xref: 1,
+      commit: "Z",
+      into_branch: "master"}
+    |> Repo.insert!()
+    Batcher.handle_cast({:reviewed, patch.id, "rvr"}, proj.id)
+    state = GitHub.ServerMock.get_state()
+    assert state == %{
+      {{:installation, 91}, 14} => %{
+        branches: %{},
+        commits: %{},
+        comments: %{
+          1 => [":-1: Rejected by code reviews"]},
+        statuses: %{"Z" => %{"cn" => :ok}},
+        files: %{"Z" => %{"bors.toml" =>
+                           ~s/status = [ "ci" ]\nrequired_approvals = 1/}},
+        reviews: %{1 => %{"APPROVED" => 2, "CHANGES_REQUESTED" => 1}},
+      }}
+  end
+
+  test "accepts a patch with a requested changes turned off", %{proj: proj} do
+    GitHub.ServerMock.put_state(%{
+      {{:installation, 91}, 14} => %{
+        branches: %{},
+        commits: %{},
+        comments: %{1 => []},
+        statuses: %{"Z" => %{"cn" => :ok}},
+        reviews: %{1 => %{"APPROVED" => 0, "CHANGES_REQUESTED" => 1}},
+        files: %{"Z" => %{"bors.toml" =>
+          ~s/status = [ "ci" ]\npr_status = [ "cn" ]/}},
+      }})
+    patch = %Patch{
+              project_id: proj.id,
+              pr_xref: 1,
+              commit: "Z",
+              into_branch: "master"}
+            |> Repo.insert!()
+    Batcher.handle_cast({:reviewed, patch.id, "rvr"}, proj.id)
+    state = GitHub.ServerMock.get_state()
+    assert state == %{
+             {{:installation, 91}, 14} => %{
+               branches: %{},
+               commits: %{},
+               comments: %{1 => []},
+               statuses: %{"Z" => %{"bors" => :running, "cn" => :ok}},
+               files: %{"Z" => %{"bors.toml" =>
+                 ~s/status = [ "ci" ]\npr_status = [ "cn" ]/}},
+               reviews: %{1 => %{"APPROVED" => 0, "CHANGES_REQUESTED" => 1}},
+             }}
+  end
+
+
+
 
   test "rejects a patch with too few approved reviews", %{proj: proj} do
     GitHub.ServerMock.put_state(%{
@@ -470,7 +1039,7 @@ defmodule BorsNG.Worker.BatcherTest do
           "staging" => ""},
         commits: %{
           "ini" => %{
-            commit_message: "[ci skip]",
+            commit_message: "[ci skip][skip ci][skip netlify]",
             parents: ["ini"]}},
         comments: %{1 => ["# Configuration problem\nbors.toml: not found"]},
         statuses: %{"N" => %{"bors" => :error}},
@@ -510,110 +1079,13 @@ defmodule BorsNG.Worker.BatcherTest do
     batch = Repo.get_by! Batch, project_id: proj.id
     assert batch.state == :waiting
     # Polling at a later time (yeah, I'm setting the clock back to do it)
-    # kicks it off.
+    # causes the zero-patch batch to cancel.
     batch
     |> Batch.changeset(%{last_polled: 0})
     |> Repo.update!()
     Batcher.handle_info({:poll, :once}, proj.id)
     batch = Repo.get_by! Batch, project_id: proj.id
-    assert batch.state == :running
-    assert GitHub.ServerMock.get_state() == %{
-      {{:installation, 91}, 14} => %{
-        branches: %{
-          "master" => "ini",
-          "staging" => "ini"},
-        commits: %{
-          "ini" => %{
-            commit_message: "Merge\n\n\n",
-            parents: ["ini"]}},
-        comments: %{},
-        statuses: %{"ini" => %{"bors" => :running}},
-        files: %{"staging.tmp" => %{
-          "bors.toml" =>
-            ~s"""
-              status = [ "ci" ]
-              [unstable]
-              allow-empty-batches = true
-            """}},
-      }}
-    # Polling again should change nothing.
-    Batcher.handle_info({:poll, :once}, proj.id)
-    batch = Repo.get_by! Batch, project_id: proj.id
-    assert batch.state == :running
-    # Force-polling again should still change nothing.
-    batch
-    |> Batch.changeset(%{last_polled: 0})
-    |> Repo.update!()
-    Batcher.handle_info({:poll, :once}, proj.id)
-    batch = Repo.get_by! Batch, project_id: proj.id
-    assert batch.state == :running
-    assert GitHub.ServerMock.get_state() == %{
-      {{:installation, 91}, 14} => %{
-        branches: %{
-          "master" => "ini",
-          "staging" => "ini"},
-        commits: %{
-          "ini" => %{
-            commit_message: "Merge\n\n\n",
-            parents: ["ini"]}},
-        comments: %{},
-        statuses: %{"ini" => %{"bors" => :running}},
-        files: %{"staging.tmp" => %{
-          "bors.toml" =>
-            ~s"""
-              status = [ "ci" ]
-              [unstable]
-              allow-empty-batches = true
-            """}},
-      }}
-    # Mark the CI as having finished.
-    GitHub.ServerMock.put_state(%{
-      {{:installation, 91}, 14} => %{
-        branches: %{
-          "master" => "ini",
-          "staging" => "ini"},
-        commits: %{
-          "ini" => %{
-            commit_message: "Merge\n\n\n",
-            parents: ["ini"]}},
-        comments: %{},
-        statuses: %{
-          "ini" => %{"ci" => :ok, "bors" => :running}},
-        files: %{"staging.tmp" => %{
-          "bors.toml" =>
-            ~s"""
-              status = [ "ci" ]
-              [unstable]
-              allow-empty-batches = true
-            """}},
-      }})
-    # Finally, an actual poll should finish it.
-    batch
-    |> Batch.changeset(%{last_polled: 0})
-    |> Repo.update!()
-    Batcher.handle_info({:poll, :once}, proj.id)
-    batch = Repo.get_by! Batch, project_id: proj.id
-    assert batch.state == :ok
-    assert GitHub.ServerMock.get_state() == %{
-      {{:installation, 91}, 14} => %{
-        branches: %{
-          "master" => "ini",
-          "staging" => "ini"},
-        commits: %{
-          "ini" => %{
-            commit_message: "Merge\n\n\n",
-            parents: ["ini"]}},
-        comments: %{},
-        statuses: %{
-          "ini" => %{"bors" => :ok, "ci" => :ok}},
-        files: %{"staging.tmp" => %{
-          "bors.toml" =>
-            ~s"""
-              status = [ "ci" ]
-              [unstable]
-              allow-empty-batches = true
-            """}},
-      }}
+    assert batch.state == :canceled
   end
 
   test "full runthrough (with polling fallback)", %{proj: proj} do
@@ -667,7 +1139,7 @@ defmodule BorsNG.Worker.BatcherTest do
           "master" => "ini",
           "staging" => "iniN"},
         commits: %{
-          "ini" => %{commit_message: "[ci skip]", parents: ["ini"]},
+          "ini" => %{commit_message: "[ci skip][skip ci][skip netlify]", parents: ["ini"]},
           "iniN" => %{
             commit_message: "Merge #1\n\n1:  r=rvr a=[unknown]\n\n\n" <>
               "\nCo-authored-by: a <e>\n",
@@ -696,7 +1168,7 @@ defmodule BorsNG.Worker.BatcherTest do
           "master" => "ini",
           "staging" => "iniN"},
         commits: %{
-          "ini" => %{commit_message: "[ci skip]", parents: ["ini"]},
+          "ini" => %{commit_message: "[ci skip][skip ci][skip netlify]", parents: ["ini"]},
           "iniN" => %{
             commit_message: "Merge #1\n\n1:  r=rvr a=[unknown]\n\n\n" <>
               "\nCo-authored-by: a <e>\n",
@@ -716,7 +1188,7 @@ defmodule BorsNG.Worker.BatcherTest do
           "master" => "ini",
           "staging" => "iniN"},
         commits: %{
-          "ini" => %{commit_message: "[ci skip]", parents: ["ini"]},
+          "ini" => %{commit_message: "[ci skip][skip ci][skip netlify]", parents: ["ini"]},
           "iniN" => %{
             commit_message: "Merge #1\n\n1:  r=rvr a=[unknown]\n\n\n" <>
               "\nCo-authored-by: a <e>\n",
@@ -739,7 +1211,7 @@ defmodule BorsNG.Worker.BatcherTest do
           "master" => "ini",
           "staging" => "iniN"},
         commits: %{
-          "ini" => %{commit_message: "[ci skip]", parents: ["ini"]},
+          "ini" => %{commit_message: "[ci skip][skip ci][skip netlify]", parents: ["ini"]},
           "iniN" => %{
             commit_message: "Merge #1\n\n1:  r=rvr a=[unknown]\n\n\n" <>
               "\nCo-authored-by: a <e>\n",
@@ -766,7 +1238,7 @@ defmodule BorsNG.Worker.BatcherTest do
           "master" => "iniN",
           "staging" => "iniN"},
         commits: %{
-          "ini" => %{commit_message: "[ci skip]", parents: ["ini"]},
+          "ini" => %{commit_message: "[ci skip][skip ci][skip netlify]", parents: ["ini"]},
           "iniN" => %{
             commit_message: "Merge #1\n\n1:  r=rvr a=[unknown]\n\n\n" <>
               "\nCo-authored-by: a <e>\n",
@@ -782,7 +1254,7 @@ defmodule BorsNG.Worker.BatcherTest do
       }}
   end
 
-  test "merge conflict", %{proj: proj} do
+  test "full runthrough (with wildcard)", %{proj: proj} do
     # Projects are created with a "waiting" state
     GitHub.ServerMock.put_state(%{
       {{:installation, 91}, 14} => %{
@@ -790,6 +1262,187 @@ defmodule BorsNG.Worker.BatcherTest do
         commits: %{},
         comments: %{1 => []},
         statuses: %{"iniN" => %{}},
+        files: %{"staging.tmp" => %{"bors.toml" => ~s/status = [ "c%" ]/}},
+        pr_commits: %{1 => [
+                        %GitHub.Commit{sha: "1234", author_name: "a", author_email: "e"},
+        ]},
+      }})
+    patch = %Patch{
+              project_id: proj.id,
+              pr_xref: 1,
+              commit: "N",
+              into_branch: "master"}
+            |> Repo.insert!()
+    Batcher.handle_cast({:reviewed, patch.id, "rvr"}, proj.id)
+    assert GitHub.ServerMock.get_state() == %{
+             {{:installation, 91}, 14} => %{
+               branches: %{"master" => "ini", "staging" => "", "staging.tmp" => ""},
+               commits: %{},
+               comments: %{1 => []},
+               statuses: %{"iniN" => %{}, "N" => %{"bors" => :running}},
+               files: %{"staging.tmp" => %{"bors.toml" => ~s/status = [ "c%" ]/}},
+               pr_commits: %{1 => [
+                               %GitHub.Commit{sha: "1234", author_name: "a", author_email: "e"},
+               ]},
+             }}
+    batch = Repo.get_by! Batch, project_id: proj.id
+    assert batch.state == :waiting
+    # Polling at the same time doesn't change that.
+    Batcher.handle_info({:poll, :once}, proj.id)
+    batch = Repo.get_by! Batch, project_id: proj.id
+    assert batch.state == :waiting
+    # Polling at a later time (yeah, I'm setting the clock back to do it)
+    # kicks it off.
+    batch
+    |> Batch.changeset(%{last_polled: 0})
+    |> Repo.update!()
+    Batcher.handle_info({:poll, :once}, proj.id)
+    batch = Repo.get_by! Batch, project_id: proj.id
+    assert batch.state == :running
+    assert GitHub.ServerMock.get_state() == %{
+             {{:installation, 91}, 14} => %{
+               branches: %{
+                 "master" => "ini",
+                 "staging" => "iniN"},
+               commits: %{
+                 "ini" => %{commit_message: "[ci skip][skip ci][skip netlify]", parents: ["ini"]},
+                 "iniN" => %{
+                   commit_message: "Merge #1\n\n1:  r=rvr a=[unknown]\n\n\n" <>
+                                   "\nCo-authored-by: a <e>\n",
+                   parents: ["ini", "N"]}},
+               comments: %{1 => []},
+               statuses: %{"iniN" => %{}, "N" => %{"bors" => :running}},
+               files: %{"staging.tmp" => %{"bors.toml" => ~s/status = [ "c%" ]/}},
+               pr_commits: %{1 => [
+                               %GitHub.Commit{sha: "1234", author_name: "a", author_email: "e"},
+               ]},
+             }}
+    # Polling again should change nothing.
+    Batcher.handle_info({:poll, :once}, proj.id)
+    batch = Repo.get_by! Batch, project_id: proj.id
+    assert batch.state == :running
+    # Force-polling again should still change nothing.
+    batch
+    |> Batch.changeset(%{last_polled: 0})
+    |> Repo.update!()
+    Batcher.handle_info({:poll, :once}, proj.id)
+    batch = Repo.get_by! Batch, project_id: proj.id
+    assert batch.state == :running
+    assert GitHub.ServerMock.get_state() == %{
+             {{:installation, 91}, 14} => %{
+               branches: %{
+                 "master" => "ini",
+                 "staging" => "iniN"},
+               commits: %{
+                 "ini" => %{commit_message: "[ci skip][skip ci][skip netlify]", parents: ["ini"]},
+                 "iniN" => %{
+                   commit_message: "Merge #1\n\n1:  r=rvr a=[unknown]\n\n\n" <>
+                                   "\nCo-authored-by: a <e>\n",
+                   parents: ["ini", "N"]}},
+               comments: %{1 => []},
+               statuses: %{"iniN" => %{}, "N" => %{"bors" => :running}},
+               files: %{"staging.tmp" => %{"bors.toml" => ~s/status = [ "c%" ]/}},
+               pr_commits: %{1 => [
+                               %GitHub.Commit{sha: "1234", author_name: "a", author_email: "e"},
+               ]},
+             }}
+    # Mark the CI as having finished.
+    # At this point, just running should still do nothing.
+    GitHub.ServerMock.put_state(%{
+      {{:installation, 91}, 14} => %{
+        branches: %{
+          "master" => "ini",
+          "staging" => "iniN"},
+        commits: %{
+          "ini" => %{commit_message: "[ci skip][skip ci][skip netlify]", parents: ["ini"]},
+          "iniN" => %{
+            commit_message: "Merge #1\n\n1:  r=rvr a=[unknown]\n\n\n" <>
+                            "\nCo-authored-by: a <e>\n",
+            parents: ["ini", "N"]}},
+        comments: %{1 => []},
+        statuses: %{
+          "iniN" => %{"ci" => :ok},
+          "N" => %{"bors" => :running}},
+        files: %{"staging.tmp" => %{"bors.toml" => ~s/status = [ "c%" ]/}},
+        pr_commits: %{1 => [
+                        %GitHub.Commit{sha: "1234", author_name: "a", author_email: "e"},
+        ]},
+      }})
+    Batcher.handle_info({:poll, :once}, proj.id)
+    batch = Repo.get_by! Batch, project_id: proj.id
+    assert batch.state == :running
+    assert GitHub.ServerMock.get_state() == %{
+             {{:installation, 91}, 14} => %{
+               branches: %{
+                 "master" => "ini",
+                 "staging" => "iniN"},
+               commits: %{
+                 "ini" => %{commit_message: "[ci skip][skip ci][skip netlify]", parents: ["ini"]},
+                 "iniN" => %{
+                   commit_message: "Merge #1\n\n1:  r=rvr a=[unknown]\n\n\n" <>
+                                   "\nCo-authored-by: a <e>\n",
+                   parents: ["ini", "N"]}},
+               comments: %{1 => []},
+               statuses: %{
+                 "iniN" => %{"ci" => :ok},
+                 "N" => %{"bors" => :running}},
+               files: %{"staging.tmp" => %{"bors.toml" => ~s/status = [ "c%" ]/}},
+               pr_commits: %{1 => [
+                               %GitHub.Commit{sha: "1234", author_name: "a", author_email: "e"},
+               ]},
+             }}
+    # Finally, an actual poll should finish it.
+    batch
+    |> Batch.changeset(%{last_polled: 0})
+    |> Repo.update!()
+    Batcher.handle_info({:poll, :once}, proj.id)
+    batch = Repo.get_by! Batch, project_id: proj.id
+    assert batch.state == :ok
+    assert GitHub.ServerMock.get_state() == %{
+             {{:installation, 91}, 14} => %{
+               branches: %{
+                 "master" => "iniN",
+                 "staging" => "iniN"},
+               commits: %{
+                 "ini" => %{commit_message: "[ci skip][skip ci][skip netlify]", parents: ["ini"]},
+                 "iniN" => %{
+                   commit_message: "Merge #1\n\n1:  r=rvr a=[unknown]\n\n\n" <>
+                                   "\nCo-authored-by: a <e>\n",
+                   parents: ["ini", "N"]}},
+               comments: %{1 => ["# Build succeeded\n  * ci"]},
+               statuses: %{
+                 "iniN" => %{"bors" => :ok, "ci" => :ok},
+                 "N" => %{"bors" => :ok}},
+               files: %{"staging.tmp" => %{"bors.toml" => ~s/status = [ "c%" ]/}},
+               pr_commits: %{1 => [
+                               %GitHub.Commit{sha: "1234", author_name: "a", author_email: "e"},
+               ]},
+             }}
+  end
+
+  test "merge conflict with master", %{proj: proj} do
+    # Projects are created with a "waiting" state
+    GitHub.ServerMock.put_state(%{
+      {{:installation, 91}, 14} => %{
+        branches: %{"master" => "ini", "staging" => "", "staging.tmp" => ""},
+        commits: %{},
+        comments: %{1 => []},
+        statuses: %{"iniN" => %{}},
+        pulls: %{
+          1 => %Pr{
+            number: 1,
+            title: "Test",
+            body: "Mess",
+            state: :open,
+            base_ref: "master",
+            head_sha: "00000001",
+            head_ref: "update",
+            base_repo_id: 14,
+            head_repo_id: 14,
+            merged: false,
+            mergeable: false,
+          }
+        },
         files: %{"staging.tmp" => %{"bors.toml" => ~s/status = [ "ci" ]/}},
         pr_commits: %{1 => [
           %GitHub.Commit{sha: "1234", author_name: "a", author_email: "e"},
@@ -822,9 +1475,24 @@ defmodule BorsNG.Worker.BatcherTest do
       {{:installation, 91}, 14} => %{
         branches: %{"master" => "ini", "staging" => ""},
         commits: %{
-          "ini" => %{commit_message: "[ci skip]", parents: ["ini"]}},
+          "ini" => %{commit_message: "[ci skip][skip ci][skip netlify]", parents: ["ini"]}},
         comments: %{1 => ["# Merge conflict"]},
         statuses: %{"N" => %{"bors" => :error}, "iniN" => %{}},
+        pulls: %{
+          1 => %Pr{
+            number: 1,
+            title: "Test",
+            body: "Mess",
+            state: :open,
+            base_ref: "master",
+            head_sha: "00000001",
+            head_ref: "update",
+            base_repo_id: 14,
+            head_repo_id: 14,
+            merged: false,
+            mergeable: false,
+          }
+        },
         files: %{"staging.tmp" => %{"bors.toml" => ~s/status = [ "ci" ]/}},
         pr_commits: %{1 => [
           %GitHub.Commit{sha: "1234", author_name: "a", author_email: "e"},
@@ -832,6 +1500,155 @@ defmodule BorsNG.Worker.BatcherTest do
       },
       :merge_conflict => 0,
     }
+  end
+
+  test "push to master branch is a non-fast-forward update", %{proj: proj} do
+    GitHub.ServerMock.put_state(%{
+      {{:installation, 91}, 14} => %{
+        branches: %{"master" => "ini", "staging" => "", "staging.tmp" => ""},
+        commits: %{},
+        comments: %{1 => [], 2 => []},
+        statuses: %{},
+        files: %{"staging.tmp" => %{"bors.toml" => ~s/status = [ "ci" ]/}},
+        pr_commits: %{
+          1 => [
+            %GitHub.Commit{sha: "1234", author_name: "a", author_email: "e"}],
+          2 => [
+            %GitHub.Commit{sha: "5678", author_name: "b", author_email: "f"}],
+        },
+        # Force any push to master to fail
+        push_errors: %{
+          "master" => %{error_code: 422, response: "{\"message\":\"Update is not a fast forward\",\"documentation_url\":\"https://developer.github.com/v3/git/refs/#update-a-reference\"}"}
+        }
+      }})
+
+    patch = %Patch{
+              project_id: proj.id,
+              pr_xref: 1,
+              commit: "N",
+              into_branch: "master"}
+            |> Repo.insert!()
+    patch2 = %Patch{
+              project_id: proj.id,
+              pr_xref: 2,
+              commit: "O",
+              into_branch: "master"}
+            |> Repo.insert!()
+
+    Batcher.handle_cast({:reviewed, patch.id, "rvr"}, proj.id)
+    Batcher.handle_cast({:reviewed, patch2.id, "rvr"}, proj.id)
+
+    # Force initiate a poll to start the batch running
+    batch = Repo.get_by! Batch, project_id: proj.id
+    batch
+    |> Batch.changeset(%{last_polled: 0})
+    |> Repo.update!()
+    Batcher.handle_info({:poll, :once}, proj.id)
+
+    # Confirm the batch is running
+    batch = Repo.get_by! Batch, project_id: proj.id
+    assert batch.state == :running
+
+    # and then make the build succeed!
+    Batcher.do_handle_cast({:status, {"iniNO", "ci", :ok, nil}}, proj.id)
+
+    batches = Repo.all(from b in Batch, where: b.project_id == ^proj.id, order_by: [asc: b.id], preload: [:patches])
+    assert Enum.count(batches) == 2
+    [original, retried] = batches
+
+    assert original.state == :error
+
+    # a non-bisected batch is queued to run next
+    assert retried.state == :waiting
+    assert Enum.count(retried.patches) == 2
+  end
+
+  test "push to master branch, other 442 errors result in a crash", %{proj: proj} do
+    GitHub.ServerMock.put_state(%{
+      {{:installation, 91}, 14} => %{
+        branches: %{"master" => "ini", "staging" => "", "staging.tmp" => ""},
+        commits: %{},
+        comments: %{1 => []},
+        statuses: %{},
+        files: %{"staging.tmp" => %{"bors.toml" => ~s/status = [ "ci" ]/}},
+        pr_commits: %{
+          1 => [
+            %GitHub.Commit{sha: "1234", author_name: "a", author_email: "e"}],
+        },
+        # Force any push to master to fail
+        push_errors: %{
+          "master" => %{error_code: 422, response: "{\"message\":\"Some other error\"}"}
+        }
+      }})
+
+    patch = %Patch{
+              project_id: proj.id,
+              pr_xref: 1,
+              commit: "N",
+              into_branch: "master"}
+            |> Repo.insert!()
+
+    Batcher.handle_cast({:reviewed, patch.id, "rvr"}, proj.id)
+
+    # Force initiate a poll to start the batch running
+    batch = Repo.get_by! Batch, project_id: proj.id
+    batch
+    |> Batch.changeset(%{last_polled: 0})
+    |> Repo.update!()
+    Batcher.handle_info({:poll, :once}, proj.id)
+
+    # Confirm the batch is running
+    batch = Repo.get_by! Batch, project_id: proj.id
+    assert batch.state == :running
+
+    # and then trigger the push
+    assert_raise MatchError, fn ->
+      Batcher.do_handle_cast({:status, {"iniN", "ci", :ok, nil}}, proj.id)
+    end
+  end
+
+  test "push to master branch, other error codes result in a crash", %{proj: proj} do
+    GitHub.ServerMock.put_state(%{
+      {{:installation, 91}, 14} => %{
+        branches: %{"master" => "ini", "staging" => "", "staging.tmp" => ""},
+        commits: %{},
+        comments: %{1 => []},
+        statuses: %{},
+        files: %{"staging.tmp" => %{"bors.toml" => ~s/status = [ "ci" ]/}},
+        pr_commits: %{
+          1 => [
+            %GitHub.Commit{sha: "1234", author_name: "a", author_email: "e"}],
+        },
+        # Force any push to master to fail
+        push_errors: %{
+          "master" => %{error_code: 500, response: "{\"message\":\"Some other error\"}"}
+        }
+      }})
+
+    patch = %Patch{
+              project_id: proj.id,
+              pr_xref: 1,
+              commit: "N",
+              into_branch: "master"}
+            |> Repo.insert!()
+
+    Batcher.handle_cast({:reviewed, patch.id, "rvr"}, proj.id)
+
+    # Force initiate a poll to start the batch running
+    batch = Repo.get_by! Batch, project_id: proj.id
+    batch
+    |> Batch.changeset(%{last_polled: 0})
+    |> Repo.update!()
+    Batcher.handle_info({:poll, :once}, proj.id)
+
+    # Confirm the batch is running
+    batch = Repo.get_by! Batch, project_id: proj.id
+    assert batch.state == :running
+
+    # and then trigger the push
+    assert_raise MatchError, fn ->
+      Batcher.do_handle_cast({:status, {"iniN", "ci", :ok, nil}}, proj.id)
+    end
   end
 
   test "full runthrough and continue", %{proj: proj} do
@@ -891,7 +1708,7 @@ defmodule BorsNG.Worker.BatcherTest do
           "master" => "ini",
           "staging" => "iniN"},
         commits: %{
-          "ini" => %{commit_message: "[ci skip]", parents: ["ini"]},
+          "ini" => %{commit_message: "[ci skip][skip ci][skip netlify]", parents: ["ini"]},
           "iniN" => %{
             commit_message: "Merge #1\n\n1:  r=rvr a=[unknown]\n\n\n" <>
               "\nCo-authored-by: a <e>\n",
@@ -913,7 +1730,7 @@ defmodule BorsNG.Worker.BatcherTest do
           "master" => "ini",
           "staging" => "iniN"},
         commits: %{
-          "ini" => %{commit_message: "[ci skip]", parents: ["ini"]},
+          "ini" => %{commit_message: "[ci skip][skip ci][skip netlify]", parents: ["ini"]},
           "iniN" => %{
             commit_message: "Merge #1\n\n1:  r=rvr a=[unknown]\n\n\n" <>
               "\nCo-authored-by: a <e>\n",
@@ -951,8 +1768,8 @@ defmodule BorsNG.Worker.BatcherTest do
           "master" => "iniN",
           "staging" => "iniNO"},
         commits: %{
-          "ini" => %{commit_message: "[ci skip]", parents: ["ini"]},
-          "iniN" => %{commit_message: "[ci skip]", parents: ["iniN"]},
+          "ini" => %{commit_message: "[ci skip][skip ci][skip netlify]", parents: ["ini"]},
+          "iniN" => %{commit_message: "[ci skip][skip ci][skip netlify]", parents: ["iniN"]},
           "iniNO" => %{
             commit_message: "Merge #2\n\n2:  r=rvr a=[unknown]\n\n\n" <>
               "\nCo-authored-by: b <f>\n",
@@ -1028,7 +1845,7 @@ defmodule BorsNG.Worker.BatcherTest do
           "master" => "ini",
           "staging" => "iniN"},
         commits: %{
-          "ini" => %{commit_message: "[ci skip]", parents: ["ini"]},
+          "ini" => %{commit_message: "[ci skip][skip ci][skip netlify]", parents: ["ini"]},
           "iniN" => %{
             commit_message: "Merge #1\n\n1:  r=rvr a=[unknown]\n\n\n" <>
               "\nCo-authored-by: a <e>\n",
@@ -1066,7 +1883,7 @@ defmodule BorsNG.Worker.BatcherTest do
           "master" => "ini",
           "staging" => "iniO"},
         commits: %{
-          "ini" => %{commit_message: "[ci skip]", parents: ["ini"]},
+          "ini" => %{commit_message: "[ci skip][skip ci][skip netlify]", parents: ["ini"]},
           "iniN" => %{
             commit_message: "Merge #1\n\n1:  r=rvr a=[unknown]\n\n\n" <>
               "\nCo-authored-by: a <e>\n",
@@ -1097,7 +1914,7 @@ defmodule BorsNG.Worker.BatcherTest do
           "master" => "iniO",
           "staging" => "iniO"},
         commits: %{
-          "ini" => %{commit_message: "[ci skip]", parents: ["ini"]},
+          "ini" => %{commit_message: "[ci skip][skip ci][skip netlify]", parents: ["ini"]},
           "iniN" => %{
             commit_message: "Merge #1\n\n1:  r=rvr a=[unknown]\n\n\n" <>
               "\nCo-authored-by: a <e>\n",
@@ -1133,12 +1950,12 @@ defmodule BorsNG.Worker.BatcherTest do
           "master" => "iniO",
           "staging" => "iniON"},
         commits: %{
-          "ini" => %{commit_message: "[ci skip]", parents: ["ini"]},
+          "ini" => %{commit_message: "[ci skip][skip ci][skip netlify]", parents: ["ini"]},
           "iniN" => %{
             commit_message: "Merge #1\n\n1:  r=rvr a=[unknown]\n\n\n" <>
               "\nCo-authored-by: a <e>\n",
             parents: ["ini", "N"]},
-          "iniO" => %{commit_message: "[ci skip]", parents: ["iniO"]},
+          "iniO" => %{commit_message: "[ci skip][skip ci][skip netlify]", parents: ["iniO"]},
           "iniON" => %{
             commit_message: "Merge #1\n\n1:  r=rvr a=[unknown]\n\n\n" <>
               "\nCo-authored-by: a <e>\n",
@@ -1166,12 +1983,12 @@ defmodule BorsNG.Worker.BatcherTest do
           "master" => "iniON",
           "staging" => "iniON"},
         commits: %{
-          "ini" => %{commit_message: "[ci skip]", parents: ["ini"]},
+          "ini" => %{commit_message: "[ci skip][skip ci][skip netlify]", parents: ["ini"]},
           "iniN" => %{
             commit_message: "Merge #1\n\n1:  r=rvr a=[unknown]\n\n\n" <>
               "\nCo-authored-by: a <e>\n",
             parents: ["ini", "N"]},
-          "iniO" => %{commit_message: "[ci skip]", parents: ["iniO"]},
+          "iniO" => %{commit_message: "[ci skip][skip ci][skip netlify]", parents: ["iniO"]},
           "iniON" => %{
             commit_message: "Merge #1\n\n1:  r=rvr a=[unknown]\n\n\n" <>
               "\nCo-authored-by: a <e>\n",
@@ -1252,7 +2069,7 @@ defmodule BorsNG.Worker.BatcherTest do
           "master" => "ini",
           "staging" => "iniNO"},
         commits: %{
-          "ini" => %{commit_message: "[ci skip]", parents: ["ini"]},
+          "ini" => %{commit_message: "[ci skip][skip ci][skip netlify]", parents: ["ini"]},
           "iniNO" => %{
             commit_message: "Merge #1 #2\n\n1:  r=rvr a=[unknown]\n\n\n" <>
               "\n2:  r=rvr a=[unknown]\n\n\n" <>
@@ -1278,7 +2095,7 @@ defmodule BorsNG.Worker.BatcherTest do
           "master" => "ini",
           "staging" => "iniNO"},
         commits: %{
-          "ini" => %{commit_message: "[ci skip]", parents: ["ini"]},
+          "ini" => %{commit_message: "[ci skip][skip ci][skip netlify]", parents: ["ini"]},
           "iniNO" => %{
             commit_message: "Merge #1 #2\n\n1:  r=rvr a=[unknown]\n\n\n" <>
               "\n2:  r=rvr a=[unknown]\n\n\n" <>
@@ -1313,7 +2130,7 @@ defmodule BorsNG.Worker.BatcherTest do
           "master" => "ini",
           "staging" => "iniN"},
         commits: %{
-          "ini" => %{commit_message: "[ci skip]", parents: ["ini"]},
+          "ini" => %{commit_message: "[ci skip][skip ci][skip netlify]", parents: ["ini"]},
           "iniNO" => %{
             commit_message: "Merge #1 #2\n\n1:  r=rvr a=[unknown]\n\n\n" <>
               "\n2:  r=rvr a=[unknown]\n\n\n" <>
@@ -1349,7 +2166,7 @@ defmodule BorsNG.Worker.BatcherTest do
           "master" => "ini",
           "staging" => "iniN"},
         commits: %{
-          "ini" => %{commit_message: "[ci skip]", parents: ["ini"]},
+          "ini" => %{commit_message: "[ci skip][skip ci][skip netlify]", parents: ["ini"]},
           "iniNO" => %{
             commit_message: "Merge #1 #2\n\n1:  r=rvr a=[unknown]\n\n\n" <>
               "\n2:  r=rvr a=[unknown]\n\n\n" <>
@@ -1389,7 +2206,7 @@ defmodule BorsNG.Worker.BatcherTest do
           "master" => "ini",
           "staging" => "iniO"},
         commits: %{
-          "ini" => %{commit_message: "[ci skip]", parents: ["ini"]},
+          "ini" => %{commit_message: "[ci skip][skip ci][skip netlify]", parents: ["ini"]},
           "iniNO" => %{
             commit_message: "Merge #1 #2\n\n1:  r=rvr a=[unknown]\n\n\n" <>
               "\n2:  r=rvr a=[unknown]\n\n\n" <>
@@ -1432,7 +2249,7 @@ defmodule BorsNG.Worker.BatcherTest do
           "master" => "ini",
           "staging" => "iniO"},
         commits: %{
-          "ini" => %{commit_message: "[ci skip]", parents: ["ini"]},
+          "ini" => %{commit_message: "[ci skip][skip ci][skip netlify]", parents: ["ini"]},
           "iniNO" => %{
             commit_message: "Merge #1 #2\n\n1:  r=rvr a=[unknown]\n\n\n" <>
               "\n2:  r=rvr a=[unknown]\n\n\n" <>
@@ -1531,7 +2348,7 @@ defmodule BorsNG.Worker.BatcherTest do
           "master" => "ini",
           "staging" => "iniN"},
         commits: %{
-          "ini" => %{commit_message: "[ci skip]", parents: ["ini"]},
+          "ini" => %{commit_message: "[ci skip][skip ci][skip netlify]", parents: ["ini"]},
           "iniN" => %{
             commit_message: "Merge #1\n\n1:  r=rvr a=[unknown]\n\n\n" <>
               "\nCo-authored-by: a <e>\n",
@@ -1572,12 +2389,12 @@ defmodule BorsNG.Worker.BatcherTest do
           "master" => "iniN",
           "staging" => "releaseO"},
         commits: %{
-          "ini" => %{commit_message: "[ci skip]", parents: ["ini"]},
+          "ini" => %{commit_message: "[ci skip][skip ci][skip netlify]", parents: ["ini"]},
           "iniN" => %{
             commit_message: "Merge #1\n\n1:  r=rvr a=[unknown]\n\n\n" <>
               "\nCo-authored-by: a <e>\n",
             parents: ["ini", "N"]},
-          "release" => %{commit_message: "[ci skip]", parents: ["release"]},
+          "release" => %{commit_message: "[ci skip][skip ci][skip netlify]", parents: ["release"]},
           "releaseO" => %{
             commit_message: "Merge #2\n\n2:  r=rvr a=[unknown]\n\n\n" <>
               "\nCo-authored-by: b <f>\n",
@@ -1664,7 +2481,7 @@ defmodule BorsNG.Worker.BatcherTest do
           "master" => "ini",
           "staging" => "iniNO"},
         commits: %{
-          "ini" => %{commit_message: "[ci skip]", parents: ["ini"]},
+          "ini" => %{commit_message: "[ci skip][skip ci][skip netlify]", parents: ["ini"]},
           "iniNO" => %{
             commit_message: "Merge #1 #2\n\n1:  r=rvr a=[unknown]\n\n\n" <>
               "\n2:  r=rvr a=[unknown]\n\n\n" <>
@@ -1696,7 +2513,7 @@ defmodule BorsNG.Worker.BatcherTest do
           "master" => "iniNO",
           "staging" => "iniNO"},
         commits: %{
-          "ini" => %{commit_message: "[ci skip]", parents: ["ini"]},
+          "ini" => %{commit_message: "[ci skip][skip ci][skip netlify]", parents: ["ini"]},
           "iniNO" => %{
             commit_message: "Merge #1 #2\n\n1:  r=rvr a=[unknown]\n\n\n" <>
               "\n2:  r=rvr a=[unknown]\n\n\n" <>
@@ -1782,7 +2599,7 @@ defmodule BorsNG.Worker.BatcherTest do
           "master" => "ini",
           "staging" => "iniNO"},
         commits: %{
-          "ini" => %{commit_message: "[ci skip]", parents: ["ini"]},
+          "ini" => %{commit_message: "[ci skip][skip ci][skip netlify]", parents: ["ini"]},
           "iniNO" => %{
             commit_message: "Merge #1 #2\n\n1:  r=rvr a=[unknown]\n\n\n" <>
               "\n2:  r=rvr a=[unknown]\n\n\n" <>
@@ -1811,15 +2628,15 @@ defmodule BorsNG.Worker.BatcherTest do
           "master" => "ini",
           "staging" => "iniNO"},
         commits: %{
-          "ini" => %{commit_message: "[ci skip]", parents: ["ini"]},
+          "ini" => %{commit_message: "[ci skip][skip ci][skip netlify]", parents: ["ini"]},
           "iniNO" => %{
             commit_message: "Merge #1 #2\n\n1:  r=rvr a=[unknown]\n\n\n" <>
               "\n2:  r=rvr a=[unknown]\n\n\n" <>
               "\nCo-authored-by: a <e>\nCo-authored-by: b <f>\n",
             parents: ["ini", "N", "O"]}},
         comments: %{
-          1 => ["# Timed out (retrying...)"],
-          2 => ["# Timed out (retrying...)"]},
+          1 => ["This PR was included in a batch that timed out, it will be automatically retried"],
+          2 => ["This PR was included in a batch that timed out, it will be automatically retried"]},
         statuses: %{
           "iniNO" => %{"bors" => :error},
           "N" => %{"bors" => :error},
@@ -1846,7 +2663,7 @@ defmodule BorsNG.Worker.BatcherTest do
           "master" => "ini",
           "staging" => "iniN"},
         commits: %{
-          "ini" => %{commit_message: "[ci skip]", parents: ["ini"]},
+          "ini" => %{commit_message: "[ci skip][skip ci][skip netlify]", parents: ["ini"]},
           "iniNO" => %{
             commit_message: "Merge #1 #2\n\n1:  r=rvr a=[unknown]\n\n\n" <>
               "\n2:  r=rvr a=[unknown]\n\n\n" <>
@@ -1857,8 +2674,8 @@ defmodule BorsNG.Worker.BatcherTest do
               "\nCo-authored-by: a <e>\n",
             parents: ["ini", "N"]}},
         comments: %{
-          1 => ["# Timed out (retrying...)"],
-          2 => ["# Timed out (retrying...)"]},
+          1 => ["This PR was included in a batch that timed out, it will be automatically retried"],
+          2 => ["This PR was included in a batch that timed out, it will be automatically retried"]},
         statuses: %{
           "iniNO" => %{"bors" => :error},
           "N" => %{"bors" => :running},
@@ -1885,7 +2702,7 @@ defmodule BorsNG.Worker.BatcherTest do
           "master" => "ini",
           "staging" => "iniN"},
         commits: %{
-          "ini" => %{commit_message: "[ci skip]", parents: ["ini"]},
+          "ini" => %{commit_message: "[ci skip][skip ci][skip netlify]", parents: ["ini"]},
           "iniNO" => %{
             commit_message: "Merge #1 #2\n\n1:  r=rvr a=[unknown]\n\n\n" <>
               "\n2:  r=rvr a=[unknown]\n\n\n" <>
@@ -1896,8 +2713,8 @@ defmodule BorsNG.Worker.BatcherTest do
               "\nCo-authored-by: a <e>\n",
             parents: ["ini", "N"]}},
         comments: %{
-          1 => ["# Timed out", "# Timed out (retrying...)"],
-          2 => ["# Timed out (retrying...)"]},
+          1 => ["# Timed out", "This PR was included in a batch that timed out, it will be automatically retried"],
+          2 => ["This PR was included in a batch that timed out, it will be automatically retried"]},
         statuses: %{
           "iniNO" => %{"bors" => :error},
           "iniN" => %{"bors" => :error},
@@ -1923,7 +2740,7 @@ defmodule BorsNG.Worker.BatcherTest do
           "master" => "ini",
           "staging" => "iniO"},
         commits: %{
-          "ini" => %{commit_message: "[ci skip]", parents: ["ini"]},
+          "ini" => %{commit_message: "[ci skip][skip ci][skip netlify]", parents: ["ini"]},
           "iniNO" => %{
             commit_message: "Merge #1 #2\n\n1:  r=rvr a=[unknown]\n\n\n" <>
               "\n2:  r=rvr a=[unknown]\n\n\n" <>
@@ -1938,8 +2755,8 @@ defmodule BorsNG.Worker.BatcherTest do
               "\nCo-authored-by: b <f>\n",
             parents: ["ini", "O"]}},
         comments: %{
-          1 => ["# Timed out", "# Timed out (retrying...)"],
-          2 => ["# Timed out (retrying...)"]},
+          1 => ["# Timed out", "This PR was included in a batch that timed out, it will be automatically retried"],
+          2 => ["This PR was included in a batch that timed out, it will be automatically retried"]},
         statuses: %{
           "iniNO" => %{"bors" => :error},
           "iniN" => %{"bors" => :error},
@@ -1967,7 +2784,7 @@ defmodule BorsNG.Worker.BatcherTest do
           "master" => "ini",
           "staging" => "iniO"},
         commits: %{
-          "ini" => %{commit_message: "[ci skip]", parents: ["ini"]},
+          "ini" => %{commit_message: "[ci skip][skip ci][skip netlify]", parents: ["ini"]},
           "iniNO" => %{
             commit_message: "Merge #1 #2\n\n1:  r=rvr a=[unknown]\n\n\n" <>
               "\n2:  r=rvr a=[unknown]\n\n\n" <>
@@ -1982,8 +2799,8 @@ defmodule BorsNG.Worker.BatcherTest do
               "\nCo-authored-by: b <f>\n",
             parents: ["ini", "O"]}},
         comments: %{
-          1 => ["# Timed out", "# Timed out (retrying...)"],
-          2 => ["# Timed out", "# Timed out (retrying...)"]},
+          1 => ["# Timed out", "This PR was included in a batch that timed out, it will be automatically retried"],
+          2 => ["# Timed out", "This PR was included in a batch that timed out, it will be automatically retried"]},
         statuses: %{
           "iniNO" => %{"bors" => :error},
           "iniN" => %{"bors" => :error},
@@ -2058,6 +2875,189 @@ defmodule BorsNG.Worker.BatcherTest do
     assert status.identifier == "ci"
   end
 
+  test "set single patch", %{proj: proj} do
+    GitHub.ServerMock.put_state(%{
+      {{:installation, 91}, 14} => %{
+        branches: %{},
+        commits: %{},
+        comments: %{1 => []},
+        statuses: %{},
+        files: %{}
+      }})
+    patch = %Patch{
+      project_id: proj.id,
+      pr_xref: 1,
+      into_branch: "master"}
+    |> Repo.insert!()
+
+    Batcher.handle_call({:set_is_single, patch.id, true}, nil, nil)
+    assert Repo.one!(Patch).is_single == true
+    Batcher.handle_call({:set_is_single, patch.id, false}, nil, nil)
+    assert Repo.one!(Patch).is_single == false
+    Batcher.handle_call({:set_is_single, patch.id, true}, nil, nil)
+    assert Repo.one!(Patch).is_single == true
+  end
+
+  test "single patches get solo batched", %{proj: proj} do
+    GitHub.ServerMock.put_state(%{
+      {{:installation, 91}, 14} => %{
+        branches: %{},
+        commits: %{},
+        comments: %{1 => []},
+        statuses: %{},
+        files: %{}
+      }})
+
+    patch = %Patch{
+      project_id: proj.id,
+      pr_xref: 1,
+      commit: "N",
+      into_branch: "master"}
+    |> Repo.insert!()
+    patch2 = %Patch{
+      project_id: proj.id,
+      pr_xref: 2,
+      commit: "O",
+      into_branch: "master"}
+    |> Repo.insert!()
+    batch = %Batch{
+      project_id: proj.id,
+      state: :waiting,
+      into_branch: "master"}
+    |> Repo.insert!()
+
+    %LinkPatchBatch{patch_id: patch.id, batch_id: batch.id}
+    |> Repo.insert!()
+
+    Batcher.handle_call({:set_is_single, patch2.id, true}, nil, proj.id)
+    Batcher.handle_cast({:reviewed, patch2.id, "rvr"}, proj.id)
+
+    projBatches = proj.id |> Batch.all_for_project() |> Repo.all()
+    [patchBatch] = patch.id |> Batch.all_for_patch() |> Repo.all()
+    [patch2Batch] = patch2.id |> Batch.all_for_patch() |> Repo.all()
+    assert length(projBatches) == 2
+    assert patchBatch.id != patch2Batch.id
+  end
+
+  test "single patches in solo batches stay solo batched", %{proj: proj} do
+    GitHub.ServerMock.put_state(%{
+      {{:installation, 91}, 14} => %{
+        branches: %{},
+        commits: %{},
+        comments: %{1 => []},
+        statuses: %{},
+        files: %{}
+      }})
+
+    patch = %Patch{
+      project_id: proj.id,
+      pr_xref: 1,
+      commit: "N",
+      into_branch: "master",
+      is_single: true
+    }
+    |> Repo.insert!()
+    patch2 = %Patch{
+      project_id: proj.id,
+      pr_xref: 2,
+      commit: "O",
+      into_branch: "master"
+    }
+    |> Repo.insert!()
+    batch = %Batch{
+      project_id: proj.id,
+      state: :waiting,
+      into_branch: "master"}
+    |> Repo.insert!()
+
+    %LinkPatchBatch{patch_id: patch.id, batch_id: batch.id}
+    |> Repo.insert!()
+
+    Batcher.handle_cast({:reviewed, patch2.id, "rvr"}, proj.id)
+
+    projBatches = proj.id |> Batch.all_for_project() |> Repo.all()
+    [patchBatch] = patch.id |> Batch.all_for_patch() |> Repo.all()
+    [patch2Batch] = patch2.id |> Batch.all_for_patch() |> Repo.all()
+    assert length(projBatches) == 2
+    assert patchBatch.id != patch2Batch.id
+  end
+
+  test "singled patches in solo bataches stay solo batched when bisected", %{proj: proj} do
+    GitHub.ServerMock.put_state(%{
+      {{:installation, 91}, 14} => %{
+        branches: %{"master" => "ini", "staging" => "", "staging.tmp" => ""},
+        commits: %{},
+        comments: %{1 => [], 2 => [], 3 => [], 4 => []},
+        statuses: %{},
+        files: %{"staging.tmp" => %{"bors.toml" => ~s/status = [ "ci" ]/}},
+        pr_commits: %{
+          1 => [
+            %GitHub.Commit{sha: "1234", author_name: "a", author_email: "e"}],
+          2 => [
+            %GitHub.Commit{sha: "5678", author_name: "b", author_email: "f"}],
+          3 => [
+            %GitHub.Commit{sha: "9101", author_name: "i", author_email: "m"}],
+          4 => [
+            %GitHub.Commit{sha: "1121", author_name: "j", author_email: "m"}]
+        },
+      }
+    })
+
+    patch1 = %Patch{
+      project_id: proj.id,
+      pr_xref: 1,
+      commit: "N",
+      into_branch: "master"
+    }
+    |> Repo.insert!()
+    patch2 = %Patch{
+      project_id: proj.id,
+      pr_xref: 2,
+      commit: "O",
+      into_branch: "master"
+    }
+    |> Repo.insert!()
+    patch3 = %Patch{
+      project_id: proj.id,
+      pr_xref: 3,
+      commit: "P",
+      into_branch: "master"
+    }
+    |> Repo.insert!()
+    patch4 = %Patch{
+      project_id: proj.id,
+      pr_xref: 4,
+      commit: "Q",
+      into_branch: "master"
+    }
+    |> Repo.insert!()
+
+    Batcher.handle_cast({:reviewed, patch1.id, "rvr"}, proj.id)
+    Batcher.handle_cast({:reviewed, patch2.id, "rvr"}, proj.id)
+    Batcher.handle_cast({:reviewed, patch3.id, "rvr"}, proj.id)
+    Batcher.handle_cast({:reviewed, patch4.id, "rvr"}, proj.id)
+    Batcher.handle_call({:set_is_single, patch1.id, true}, nil, proj.id)
+    Batcher.handle_cast({:reviewed, patch1.id, "rvr"}, proj.id)
+
+    batch = Repo.get_by! Batch, project_id: proj.id
+    assert batch.state == :waiting
+
+    batch
+    |> Batch.changeset(%{last_polled: 0})
+    |> Repo.update!()
+    Batcher.handle_info({:poll, :once}, proj.id)
+    batch = Repo.get_by! Batch, project_id: proj.id
+    assert batch.state == :running
+
+    Batcher.do_handle_cast({:status, {"iniNOPQ", "ci", :error, nil}}, proj.id)
+    batch = Repo.get! Batch, batch.id
+    assert batch.state == :error
+    batches = ordered_batches(proj)
+    assert length(batches) == 3
+    patch1Batches = patch1.id |> Batch.all_for_patch() |> Repo.all()
+    assert length(Enum.reject(patch1Batches, &(&1.state == :error))) == 1
+  end
+
   test "sets patch priorities", %{proj: proj} do
     GitHub.ServerMock.put_state(%{
       {{:installation, 91}, 14} => %{
@@ -2101,18 +3101,59 @@ defmodule BorsNG.Worker.BatcherTest do
     |> Repo.insert!()
     batch = %Batch{
       project_id: proj.id,
-      state: 1,
+      state: :running,
       into_branch: "master"}
     |> Repo.insert!()
 
     %LinkPatchBatch{patch_id: patch.id, batch_id: batch.id}
     |> Repo.insert!()
 
-    Batcher.handle_call({:set_priority, patch2.id, 10}, nil, nil)
+    Batcher.handle_call({:set_priority, patch2.id, 10}, nil, proj.id)
     Batcher.handle_cast({:reviewed, patch2.id, "rvr"}, proj.id)
 
     assert Repo.one!(from b in Batch,
       where: b.id == ^batch.id).state == :waiting
+    assert Repo.one!(from b in Batch, where: b.id == ^batch.id).priority == 0
+    assert Repo.one!(from b in Patch, where: b.id == ^patch.id).priority == 0
+    assert Repo.one!(from b in Batch, where: b.id != ^batch.id).priority == 10
+  end
+
+  test "allow raising a batch priority late", %{proj: proj} do
+    GitHub.ServerMock.put_state(%{
+      {{:installation, 91}, 14} => %{
+        branches: %{},
+        commits: %{},
+        comments: %{1 => []},
+        statuses: %{},
+        files: %{}
+      }})
+
+    patch = %Patch{
+              project_id: proj.id,
+              pr_xref: 1,
+              commit: "N",
+              into_branch: "master"}
+            |> Repo.insert!()
+    patch2 = %Patch{
+               project_id: proj.id,
+               pr_xref: 2,
+               commit: "O",
+               into_branch: "master"}
+             |> Repo.insert!()
+    batch = %Batch{
+              project_id: proj.id,
+              state: :running,
+              into_branch: "master"}
+            |> Repo.insert!()
+
+    %LinkPatchBatch{patch_id: patch.id, batch_id: batch.id}
+    |> Repo.insert!()
+
+    Batcher.handle_cast({:reviewed, patch2.id, "rvr"}, proj.id)
+    Batcher.handle_call({:set_priority, patch2.id, 10}, nil, nil)
+
+    assert Repo.one!(from b in Batch,
+                     where: b.id == ^batch.id).state == :waiting
     assert Repo.one!(from b in Batch, where: b.id == ^batch.id).priority == 0
     assert Repo.one!(from b in Patch, where: b.id == ^patch.id).priority == 0
     assert Repo.one!(from b in Batch, where: b.id != ^batch.id).priority == 10
@@ -2203,7 +3244,7 @@ defmodule BorsNG.Worker.BatcherTest do
       project_id: proj.id,
       pr_xref: 1,
       commit: "N",
-      title: "[ci skip]",
+      title: "[ci skip][skip ci][skip netlify]",
       into_branch: "master"}
     |> Repo.insert!()
 
@@ -2211,7 +3252,7 @@ defmodule BorsNG.Worker.BatcherTest do
 
     state = GitHub.ServerMock.get_state()
     comments = state[{{:installation, 91}, 14}].comments[1]
-    assert comments == ["Has [ci skip], bors build will time out"]
+    assert comments == ["Has [ci skip][skip ci][skip netlify], bors build will time out"]
   end
 
   defp ordered_batches(proj) do

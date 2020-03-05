@@ -1,4 +1,5 @@
-ARG ELIXIR_VERSION=1.4.5
+ARG ELIXIR_VERSION=1.7.3
+ARG SOURCE_COMMIT
 
 FROM elixir:${ELIXIR_VERSION} as builder
 
@@ -26,24 +27,27 @@ ENV MIX_ENV=prod
 RUN mix deps.get
 RUN cd /src/ && npm install && npm run deploy
 RUN mix phx.digest
-RUN mix release --env=$MIX_ENV
+RUN mix distillery.release --env=$MIX_ENV
 
 # Make the git HEAD available to the released app
 RUN if [ -d .git ]; then \
-        mkdir /src/_build/prod/rel/.git && \
-        git rev-parse --short HEAD > /src/_build/prod/rel/.git/HEAD; \
+        mkdir /src/_build/prod/rel/bors/.git && \
+        git rev-parse --short HEAD > /src/_build/prod/rel/bors/.git/HEAD; \
+    elif [ -n ${SOURCE_COMMIT} ]; then \
+        mkdir /src/_build/prod/rel/bors/.git && \
+        echo ${SOURCE_COMMIT} > /src/_build/prod/rel/bors/.git/HEAD; \
     fi
 
 ####
 
-FROM debian:jessie-slim
-RUN apt-get update -q && apt-get install -y git-core libssl1.0.0 curl ca-certificates
+FROM debian:stretch-slim
+RUN apt-get update -q && apt-get install -y git-core libssl1.1 curl ca-certificates
 
 ENV DOCKERIZE_VERSION=v0.6.0
 RUN curl -Ls https://github.com/jwilder/dockerize/releases/download/$DOCKERIZE_VERSION/dockerize-linux-amd64-$DOCKERIZE_VERSION.tar.gz | \
     tar xzv -C /usr/local/bin
 
-ADD ./docker-entrypoint /usr/local/bin/bors-ng-entrypoint
+ADD ./script/docker-entrypoint /usr/local/bin/bors-ng-entrypoint
 COPY --from=builder /src/_build/prod/rel/ /app/
 
 ENV LANG=C.UTF-8 LC_ALL=C.UTF-8

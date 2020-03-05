@@ -7,12 +7,12 @@ use Mix.Config
 # watchers to your application. For example, we use it
 # with brunch.io to recompile .js and .css sources.
 config :bors, BorsNG.Endpoint,
-  http: [port: 4000],
+  http: [port: {:system, "PORT", 8000}],
   debug_errors: true,
   code_reloader: true,
   check_origin: false,
-  watchers: [node: ["node_modules/brunch/bin/brunch", "watch", "--stdin",
-                    cd: Path.expand("../", __DIR__)]]
+  watchers: [node: ["node_modules/webpack/bin/webpack.js", "--mode", "development", "--watch-stdin",
+                    cd: Path.expand("../assets", __DIR__)]]
 
 config :bors, BorsNG.WebhookParserPlug,
   webhook_secret: "XXX"
@@ -33,10 +33,7 @@ config :bors, BorsNG.Endpoint,
 config :phoenix, :stacktrace_depth, 20
 config :bors, BorsNG.Database.Repo,
   adapter: Ecto.Adapters.Postgres,
-  username: "postgres",
-  password: "Postgres1234",
-  database: "bors_dev",
-  hostname: {:system, "POSTGRES_HOST", "localhost"},
+  url: {:system, "DATABASE_URL", "postgresql://postgres:Postgres1234@localhost/bors_dev"},
   pool_size: 10
 
 # On developer boxes, we do not actually talk to GitHub.

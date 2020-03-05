@@ -28,6 +28,15 @@ defmodule BorsNG.Worker.Batcher.Message do
     {"Delayed for higher-priority pull requests", :running}
   end
 
+  def generate_message({:preflight, :waiting}) do
+    ":clock1: Waiting for PR status (Github check) to be set, probably by CI. Bors will automatically try to run when all required PR statuses are set."
+  end
+  def generate_message({:preflight, :ok}) do
+    "All preflight checks passed. Batching this PR into the staging branch."
+  end
+  def generate_message({:preflight, :timeout}) do
+    "GitHub status checks took too long to complete, so bors is giving up. You can adjust bors configuration to have it wait longer if you like."
+  end
   def generate_message({:preflight, :blocked_labels}) do
     ":-1: Rejected by label"
   end
@@ -37,14 +46,17 @@ defmodule BorsNG.Worker.Batcher.Message do
   def generate_message({:preflight, :insufficient_approvals}) do
     ":-1: Rejected by too few approved reviews"
   end
+  def generate_message({:preflight, :missing_code_owner_approval}) do
+    ":-1: Rejected because of missing code owner approval"
+  end
   def generate_message({:preflight, :blocked_review}) do
     ":-1: Rejected by code reviews"
   end
   def generate_message({:preflight, :ci_skip}) do
-    "Has [ci skip], bors build will time out"
+    "Has [ci skip][skip ci][skip netlify], bors build will time out"
   end
-  def generate_message(:not_awaiting_review) do
-    "Not awaiting review"
+  def generate_message(:already_running_review) do
+    "Already running a review"
   end
   def generate_message({:config, message}) do
     "# Configuration problem\n#{message}"
@@ -53,27 +65,35 @@ defmodule BorsNG.Worker.Batcher.Message do
     "# Merge conflict"
   end
   def generate_message({:conflict, :retrying}) do
-    "# Merge conflict (retrying...)"
+    nil
   end
   def generate_message({:timeout, :failed}) do
     "# Timed out"
   end
   def generate_message({:timeout, :retrying}) do
-    "# Timed out (retrying...)"
+    "This PR was included in a batch that timed out, it will be automatically retried"
   end
   def generate_message({:canceled, :failed}) do
     "# Canceled"
   end
   def generate_message({:canceled, :retrying}) do
-    "# Canceled (will resume)"
+    "This PR was included in a batch that was canceled, it will be automatically retried"
+  end
+  def generate_message({:push_failed_non_ff, target_branch}) do
+    "This PR was included in a batch that successfully built, but then failed to merge into #{target_branch} (it was a non-fast-forward update). It will be automatically retried."
   end
   def generate_message({state, statuses}) do
+    is_new_year = get_is_new_year()
     msg = case state do
+      :succeeded when is_new_year -> "Build succeeded\n\n*And happy new year from bors! 🎉*\n\n"
       :succeeded -> "Build succeeded"
       :failed -> "Build failed"
       :retrying -> "Build failed (retrying...)"
     end
     Enum.reduce(statuses, "# #{msg}", &gen_status_link/2)
+  end
+  def generate_message({:merged, :squashed, target_branch}) do
+    "# Pull request successfully merged into #{target_branch}."
   end
   defp gen_status_link(status, acc) do
     status_link = case status.url do
@@ -142,5 +162,16 @@ defmodule BorsNG.Worker.Batcher.Message do
 
   def generate_bors_toml_error(:blocked_labels) do
     "bors.toml: expected blocked_labels to be a list"
+  end
+
+  def get_is_new_year do
+    celebrate_new_year = Application.get_env(:bors, :celebrate_new_year)
+    %{month: month, day: day} = DateTime.utc_now()
+    case {celebrate_new_year, month, day} do
+      {true, 12, 31} -> true
+      {true, 1, 1} -> true
+      {true, 1, 2} -> true
+      _ -> false
+    end
   end
 end

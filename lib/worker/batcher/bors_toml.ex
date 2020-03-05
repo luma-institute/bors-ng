@@ -15,9 +15,16 @@ defmodule BorsNG.Worker.Batcher.BorsToml do
 
   defstruct status: [], block_labels: [], pr_status: [],
     timeout_sec: (60 * 60),
-    required_approvals: 0,
+    # prerun_timeout_sec controls how long bors will wait for all GitHub status checks to be completed before taking action.
+    # If this value is set to 0, bors will not wait for status checks to be completed. Otherwise, Bors will poll status checks
+    # every 5 minutes. If prerun_timeout_sec or more elapsed in the latest poll, Bors will return an error message.
+    # Half an hour by default.
+    prerun_timeout_sec: (30 * 60),
+    use_squash_merge: false,
+    required_approvals: nil,
     cut_body_after: nil,
     delete_merged_branches: false,
+    use_codeowners: false,
     committer: nil
 
   @type tcommitter :: %{
@@ -26,18 +33,22 @@ defmodule BorsNG.Worker.Batcher.BorsToml do
 
   @type t :: %BorsNG.Worker.Batcher.BorsToml{
     status: [binary],
+    use_squash_merge: boolean,
     block_labels: [binary],
     pr_status: [binary],
     timeout_sec: integer,
-    required_approvals: integer,
+    prerun_timeout_sec: integer,
+    required_approvals: integer | nil,
     cut_body_after: binary | nil,
     delete_merged_branches: boolean,
+    use_codeowners: boolean,
     committer: tcommitter}
 
   @type err :: :status |
     :block_labels |
     :pr_status |
     :timeout_sec |
+    :prerun_timeout_sec |
     :required_approvals |
     :cut_body_after |
     :committer_details |
@@ -52,9 +63,9 @@ defmodule BorsNG.Worker.Batcher.BorsToml do
 
   @spec new(binary) :: {:ok, t} | {:error, err}
   def new(str) when is_binary(str) do
-    case :etoml.parse(str) do
+    case Toml.decode(str) do
       {:ok, toml} ->
-        toml = to_map toml
+        toml = to_map(toml)
 
         committer = Map.get(toml, "committer", nil)
         committer = case committer do
@@ -69,14 +80,21 @@ defmodule BorsNG.Worker.Batcher.BorsToml do
 
         toml = %BorsNG.Worker.Batcher.BorsToml{
           status: Map.get(toml, "status", []),
+          use_squash_merge: Map.get(toml,
+                    "use_squash_merge",
+                    false),
           block_labels: Map.get(toml, "block_labels", []),
           pr_status: Map.get(toml, "pr_status", []),
           timeout_sec: Map.get(toml, "timeout_sec", 60 * 60),
-          required_approvals: Map.get(toml, "required_approvals", 0),
+          prerun_timeout_sec: Map.get(toml, "prerun_timeout_sec", 30 * 60),
+          required_approvals: Map.get(toml, "required_approvals", nil),
           cut_body_after: Map.get(toml, "cut_body_after", nil),
           delete_merged_branches: Map.get(toml,
                                           "delete_merged_branches",
                                           false),
+          use_codeowners: Map.get(toml,
+            "use_codeowners",
+            false),
           committer: committer
         }
         case toml do
@@ -88,7 +106,9 @@ defmodule BorsNG.Worker.Batcher.BorsToml do
             {:error, :pr_status}
           %{timeout_sec: timeout_sec} when not is_integer timeout_sec ->
             {:error, :timeout_sec}
-          %{required_approvals: req_approve} when not is_integer req_approve ->
+          %{prerun_timeout_sec: prerun_timeout_sec} when not is_integer prerun_timeout_sec ->
+            {:error, :prerun_timeout_sec}
+          %{required_approvals: req_approve} when not is_integer(req_approve) and not is_nil(req_approve) ->
             {:error, :required_approvals}
           %{cut_body_after: c} when (not is_binary c) and (not is_nil c) ->
             {:error, :cut_body_after}

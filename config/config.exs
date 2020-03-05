@@ -2,8 +2,6 @@
 # and its dependencies with the aid of the Mix.Config module.
 use Mix.Config
 
-import_config "scout_apm.exs"
-
 # Configures Elixir's Logger
 # Do not include metadata nor timestamps in development logs
 case Mix.env do
@@ -11,13 +9,14 @@ case Mix.env do
     config :logger, level: :info
     config :logger, :console,
       format: "$time $metadata[$level] $message\n",
-      metadata: [:request_id]
+      metadata: [:request_id, :pid]
   :test ->
     config :logger, level: :warn
     config :logger, :console, format: "$message\n"
   _ ->
     config :logger, :console,
-      format: "[$level] $message\n"
+      format: "[$level] $message\n",
+      metadata: [:request_id, :pid]
 end
 
 config :bors,
@@ -25,11 +24,14 @@ config :bors,
   api_github_root: {:system, :string, "GITHUB_URL_ROOT_API",
     "https://api.github.com"},
   html_github_root: {:system, :string, "GITHUB_URL_ROOT_HTML",
-    "https://github.com"}
+    "https://github.com"},
+  api_github_timeout: {:system, :integer, "GITHUB_API_TIMEOUT",
+    10_000}
+
 
 # General application configuration
 config :bors, BorsNG,
-  command_trigger: "bors",
+  command_trigger: {:system, :string, "COMMAND_TRIGGER", "bors"},
   home_url: "https://bors.tech/",
   allow_private_repos: {:system, :boolean, "ALLOW_PRIVATE_REPOS", false},
   dashboard_header_html: {:system, :string, "DASHBOARD_HEADER_HTML", """
@@ -50,11 +52,8 @@ config :bors, BorsNG.Endpoint,
   render_errors: [view: BorsNG.ErrorView, accepts: ~w(html json)],
   pubsub: [name: BorsNG.PubSub, adapter: Phoenix.PubSub.PG2]
 
-config :wobserver,
-  mode: :plug,
-  security: BorsNG.WobserverSecurity,
-  remote_url_prefix: "/wobserver",
-  security_key: :crypto.strong_rand_bytes(128)
+# Overridden by the test config to avoid date-specific behavior
+config :bors, :celebrate_new_year, true
 
 # Import environment specific config. This must remain at the bottom
 # of this file so it overrides the configuration defined above.

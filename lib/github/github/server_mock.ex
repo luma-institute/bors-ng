@@ -10,7 +10,7 @@ defmodule BorsNG.GitHub.ServerMock do
   you can put and get its state,
   and other functions will mutate or read subsets of it.
 
-  For example, I can run `iex -S mix phoenix.server` and do this:
+  For example, I can run `iex -S mix phx.server` and do this:
 
       iex> # Push state to "GitHub"
       iex> alias BorsNG.GitHub
@@ -130,6 +130,32 @@ defmodule BorsNG.GitHub.ServerMock do
     {:reply, {:ok, "https://github.com/apps/bors-foobar"}, state}
   end
 
+  def handle_call(:get_installation_list, _from, state) do
+    list = state
+    |> Enum.flat_map(fn
+      {{{:installation, installation_number}, _repo_number}, _data} ->
+        [installation_number]
+      {{:installation, installation_number}, _data} ->
+        [installation_number]
+      _ ->
+        []
+    end)
+    |> Enum.uniq()
+    {:reply, {:ok, list}, state}
+  end
+
+
+  def do_handle_call(:get_team_by_name, repo_conn, {org_name, team}, state) do
+    with({:ok, repo} <- Map.fetch(state, repo_conn),
+      {:ok, teams} <- Map.fetch(repo, :teams),
+      {:ok, org} <- Map.fetch(teams, org_name),
+      do: Map.fetch(org, team))
+    |> case do
+         {:ok, _} = res -> {res, state}
+         _ -> {{:error, :get_pr}, state}
+       end
+  end
+
   def do_handle_call(:get_pr, repo_conn, {pr_xref}, state) do
     with({:ok, repo} <- Map.fetch(state, repo_conn),
          {:ok, pulls} <- Map.fetch(repo, :pulls),
@@ -138,6 +164,21 @@ defmodule BorsNG.GitHub.ServerMock do
       {:ok, _} = res -> {res, state}
       _ -> {{:error, :get_pr}, state}
     end
+  end
+
+  def do_handle_call(:get_pr_files, repo_conn, {pr_xref}, state) do
+
+   files = with {:ok, repo} <- Map.fetch(state, repo_conn),
+         {:ok, files} <- Map.fetch(repo, :files) do
+        fil = Enum.map(files["Z"], fn {k,v} ->
+          %BorsNG.GitHub.File{filename: k}
+        end)
+      else
+       err -> {{:error, :get_pr_files}, state}
+    end
+
+    {{:ok, files}, state}
+
   end
 
   def do_handle_call(:get_pr_commits, repo_conn, {pr_xref}, state) do
@@ -172,16 +213,24 @@ defmodule BorsNG.GitHub.ServerMock do
 
   def do_handle_call(:push, repo_conn, {sha, to}, state) do
     with {:ok, repo} <- Map.fetch(state, repo_conn),
-         {:ok, branches} <- Map.fetch(repo, :branches) do
-      branches = %{branches | to => sha}
-      repo = %{repo | branches: branches}
-      state = %{state | repo_conn => repo}
-      {{:ok, sha}, state}
+         {:ok, branches} <- Map.fetch(repo, :branches),
+         push_errors <- Map.get(repo, :push_errors, %{}) do
+      case Map.fetch(push_errors, to) do
+        {:ok, error} ->
+          {{:error, :push, error[:error_code], error[:response]}, state}
+
+        _ ->
+          branches = %{branches | to => sha}
+          repo = %{repo | branches: branches}
+          state = %{state | repo_conn => repo}
+          {{:ok, sha}, state}
+      end
     end
     |> case do
-      {{:ok, _}, _} = res -> res
-      _ -> {{:error, :push}, state}
-    end
+         {{:ok, _}, _} = res -> res
+         {{:error, :push, _, _}, _} = res -> res
+         _ -> {{:error, :push}, state}
+       end
   end
 
   def do_handle_call(:get_branch, repo_conn, {from}, state) do
@@ -326,7 +375,8 @@ defmodule BorsNG.GitHub.ServerMock do
   def do_handle_call(:get_file, repo_conn, {branch, path}, state) do
     with({:ok, repo} <- Map.fetch(state, repo_conn),
          {:ok, files} <- Map.fetch(repo, :files),
-      do: {:ok, files[branch][path]})
+      do:
+        {:ok, files[branch][path]})
     |> case do
       {:ok, _} = res -> {res, state}
       _ -> {{:error, :get_file}, state}

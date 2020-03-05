@@ -22,6 +22,7 @@ defmodule BorsNG.Command do
   alias BorsNG.Command
   alias BorsNG.Database.Context.Logging
   alias BorsNG.Database.Context.Permission
+  alias BorsNG.Database.Installation
   alias BorsNG.Database.Repo
   alias BorsNG.Database.Patch
   alias BorsNG.Database.Project
@@ -39,9 +40,6 @@ defmodule BorsNG.Command do
     patch: nil,
     comment: "")
 
-  @command_trigger(
-    Confex.fetch_env!(:bors, BorsNG)[:command_trigger])
-
   @type t :: %BorsNG.Command{
     project: Project.t,
     commenter: User.t,
@@ -49,6 +47,9 @@ defmodule BorsNG.Command do
     pr_xref: integer,
     patch: Patch.t | nil,
     comment: binary}
+
+  defp command_trigger(),
+    do: Confex.fetch_env!(:bors, BorsNG)[:command_trigger]
 
   @doc """
   If the GitHub PR is not already in this struct, fetch it.
@@ -88,7 +89,9 @@ defmodule BorsNG.Command do
 
   @type cmd ::
     {:try, binary} |
+    :try_cancel |
     {:activate_by, binary} |
+    {:set_is_single, integer()} |
     {:set_priority, integer()} |
     :activate |
     :deactivate |
@@ -114,8 +117,11 @@ defmodule BorsNG.Command do
     end)
   end
 
-  def regex, do: ~r/^#{@command_trigger}:?\s(?<command>.+)/i
+  def regex, do: ~r/^(?<command_trigger>#{command_trigger()}|bros):?\s(?<command>.+)/i
 
+  def trim_and_parse_cmd(%{"command_trigger" => "bros", "command" => cmd}) do
+    with [_] <- parse_cmd(cmd), do: [:bros]
+  end
   def trim_and_parse_cmd(%{"command" => cmd}) do
     cmd
     |> String.trim()
@@ -123,13 +129,22 @@ defmodule BorsNG.Command do
   end
   def trim_and_parse_cmd(_), do: []
 
+  def parse_cmd("try-"), do: [:try_cancel]
   def parse_cmd("try" <> arguments), do: [{:try, arguments}]
+  def parse_cmd("single" <> rest), do: parse_single_patch(rest)
+  def parse_cmd("r+ single" <> rest), do: parse_single_patch(rest) ++ [:activate]
   def parse_cmd("r+ p=" <> rest), do: parse_priority(rest) ++ [:activate]
   def parse_cmd("r+" <> _), do: [:activate]
   def parse_cmd("r-" <> _), do: [:deactivate]
   def parse_cmd("r=" <> arguments), do: parse_activation_args(arguments)
+  def parse_cmd("merge-" <> _), do: [:deactivate]
+  def parse_cmd("merge p=" <> rest), do: parse_priority(rest) ++ [:activate]
+  def parse_cmd("merge=" <> arguments), do: parse_activation_args(arguments)
+  def parse_cmd("merge" <> _), do: [:activate]
   def parse_cmd("delegate+" <> _), do: [:delegate]
   def parse_cmd("delegate=" <> arguments), do: parse_delegation_args(arguments)
+  def parse_cmd("d+" <> _), do: [:delegate]
+  def parse_cmd("d=" <> arguments), do: parse_delegation_args(arguments)
   def parse_cmd("+r" <> _), do: [{:autocorrect, "r+"}]
   def parse_cmd("-r" <> _), do: [{:autocorrect, "r-"}]
   def parse_cmd("ping" <> _), do: [:ping]
@@ -277,6 +292,15 @@ defmodule BorsNG.Command do
     [{:set_priority, p}]
   end
 
+  def parse_single_patch(binary) do
+    case String.trim(binary) do
+      "on" <> _ ->
+        [{:set_is_single, true}]
+      "off" <> _ ->
+        [{:set_is_single, false}]
+    end
+  end
+
   @doc """
   Given a populated struct, run everything.
   """
@@ -305,6 +329,12 @@ defmodule BorsNG.Command do
     :none
   end
   def required_permission_level_cmd({:try, _}) do
+    :member
+  end
+  def required_permission_level_cmd(:try_cancel) do
+    :member
+  end
+  def required_permission_level_cmd(:deactivate) do
     :member
   end
   def required_permission_level_cmd(:retry) do
@@ -359,6 +389,10 @@ defmodule BorsNG.Command do
     batcher = Batcher.Registry.get(c.project.id)
     Batcher.reviewed(batcher, c.patch.id, username)
   end
+  def run(c, {:set_is_single, is_single}) do
+    batcher = Batcher.Registry.get(c.project.id)
+    Batcher.set_is_single(batcher, c.patch.id, is_single)
+  end
   def run(c, {:set_priority, priority}) do
     batcher = Batcher.Registry.get(c.project.id)
     Batcher.set_priority(batcher, c.patch.id, priority)
@@ -372,6 +406,11 @@ defmodule BorsNG.Command do
     c = fetch_patch(c)
     attemptor = Attemptor.Registry.get(c.project.id)
     Attemptor.tried(attemptor, c.patch.id, arguments)
+  end
+  def run(c, :try_cancel) do
+    c = fetch_patch(c)
+    attemptor = Attemptor.Registry.get(c.project.id)
+    Attemptor.cancel(attemptor, c.patch.id)
   end
   def run(c, {:autocorrect, command}) do
     c.project.repo_xref
@@ -392,8 +431,9 @@ defmodule BorsNG.Command do
   def run(c, {:delegate_to, login}) do
     delegatee = case Repo.get_by(User, login: login) do
       nil ->
+        installation = Repo.get!(Installation, c.project.installation_id)
         gh_user = GitHub.get_user_by_login!(
-          {:installation, c.project.installation.installation_xref},
+          {:installation, installation.installation_xref},
           login)
         Repo.insert!(%User{
           login: gh_user.login,
@@ -406,12 +446,18 @@ defmodule BorsNG.Command do
     {commenter, cmd} = Logging.most_recent_cmd(c.patch)
     run(%{c | commenter: commenter}, cmd)
   end
+  def run(c, :bros) do
+    c.project.repo_xref
+    |> Project.installation_connection(Repo)
+    |> GitHub.post_comment!(
+      c.pr_xref, ~s/👊/)
+  end
 
   def delegate_to(c, delegatee) do
     Permission.delegate(delegatee, c.patch)
     c.project.repo_xref
     |> Project.installation_connection(Repo)
     |> GitHub.post_comment!(
-      c.pr_xref, ~s/:v: #{delegatee.login} can now approve this pull request/)
+      c.pr_xref, ~s{:v: #{delegatee.login} can now approve this pull request. To approve and merge a pull request, simply reply with `bors r+`. More detailed instructions are available [here](https://bors.tech/documentation/getting-started/#reviewing-pull-requests).})
   end
 end

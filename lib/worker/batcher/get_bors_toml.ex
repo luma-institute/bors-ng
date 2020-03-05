@@ -26,10 +26,12 @@ defmodule BorsNG.Worker.Batcher.GetBorsToml do
           {".appveyor.yml", "continuous-integration/appveyor/branch"},
           {"appveyor.yml", "continuous-integration/appveyor/branch"},
           {"circle.yml", "ci/circleci"},
+          {".circleci/config.yml", "ci/circleci%"},
           {"jet-steps.yml", "continuous-integration/codeship"},
           {"jet-steps.json", "continuous-integration/codeship"},
           {"codeship-steps.yml", "continuous-integration/codeship"},
           {"codeship-steps.json", "continuous-integration/codeship"},
+          {".semaphore/semaphore.yml", "continuous-integration/semaphoreci"},
         ]
         |> Enum.filter(fn {file, _} ->
           not is_nil GitHub.get_file!(repo_conn, branch, file) end)
